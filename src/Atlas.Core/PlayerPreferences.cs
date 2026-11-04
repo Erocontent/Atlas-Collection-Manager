@@ -5,6 +5,7 @@ namespace Atlas.Core;
 public sealed class PlayerPreferences
 {
     public Dictionary<string, string[]>? Re4Characters { get; set; }
+    public Dictionary<string, string[]>? Dmc5Characters { get; set; }
     public double[]? CompactColumnWidths { get; set; }
     public string? NexusDownloadFolder { get; set; }
     public string LauncherSkin { get; set; } = "command-center";

@@ -17,7 +17,7 @@ public static class GameCatalog
         new GameProfile("village", "Resident Evil Village", "RE Engine", 1196590, ["re8.exe"], "NoteEngine"),
         new GameProfile("mhwilds", "Monster Hunter Wilds", "RE Engine", 2246340, ["MonsterHunterWilds.exe"], "NoteEngine")
     };
-    public static IReadOnlyList<GameProfile> Available {get;}=Array.AsReadOnly(All.Where(p=>p.Id is "doa5" or "re4").ToArray());
+    public static IReadOnlyList<GameProfile> Available {get;}=Array.AsReadOnly(All.Where(p=>p.Id is "doa5" or "re4" or "dmc5").ToArray());
     public static bool IsAvailable(string id)=>Available.Any(p=>p.Id==id);
     public static GameProfile Get(string id) => All.SingleOrDefault(p => p.Id == id) ?? throw new InvalidOperationException(L.T("UnknownGame"));
 }

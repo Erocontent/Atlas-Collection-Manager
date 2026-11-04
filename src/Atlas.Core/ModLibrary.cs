@@ -39,13 +39,16 @@ public sealed partial class ModLibrary
         if (Active().Any(mod => mod.Id == id)) throw new InvalidOperationException(L.T("DisableBeforeDelete"));
         var folder = Package(id);
         if (!Directory.Exists(folder)) throw new InvalidOperationException(L.T("ModNotFound"));
-        var directories = new Stack<string>(); directories.Push(folder);
-        while (directories.Count > 0)
+        var directories = new Stack<DirectoryInfo>();
+        directories.Push(new DirectoryInfo(folder));
+        while (directories.TryPop(out var directory))
         {
-            foreach (var entry in Directory.EnumerateFileSystemEntries(directories.Pop()))
+            SafePaths.NoLinks(directory.FullName);
+            foreach (var entry in directory.EnumerateFileSystemInfos())
             {
-                SafePaths.NoLinks(entry);
-                if (Directory.Exists(entry)) directories.Push(entry);
+                if ((entry.Attributes & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidOperationException(L.T("LinksNotAllowed", entry.FullName));
+                if (entry is DirectoryInfo child) directories.Push(child);
             }
         }
         // Package(id) validates containment and every descendant was checked for links.
@@ -55,7 +58,9 @@ public sealed partial class ModLibrary
         => ImportVariants(zip, name, category, destination) ?? ImportArchive(zip, name, category, destination, autoLinkSkin, null,character,canonicalCharacters);
     public ModPackage ImportReShade(string zip, string name, ReShadeImportPlan plan)
         => ImportArchive(zip, name, "ReShade", "", false, plan);
-    private ModPackage ImportArchive(string zip, string name, string category, string destination, bool autoLinkSkin, ReShadeImportPlan? reShade,string? character=null,bool canonicalCharacters=false)
+    internal ModPackage ImportReFramework(string zip, string name, string category) =>
+        ImportArchive(zip, name, category, "", false, null, reFrameworkOnly: true);
+    private ModPackage ImportArchive(string zip, string name, string category, string destination, bool autoLinkSkin, ReShadeImportPlan? reShade,string? character=null,bool canonicalCharacters=false,bool reFrameworkOnly=false)
     {
         if (string.IsNullOrWhiteSpace(name)) throw new InvalidOperationException(L.T("EnterModName"));
         if (autoLinkSkin && profile.Id != "doa5") throw new InvalidOperationException(L.T("AutoLinkOnlyDoa"));
@@ -69,7 +74,13 @@ public sealed partial class ModLibrary
         try
         {
             using var archive = ModArchives.Open(zip);
-            if (profile.Id == "re4" && destination.Length == 0 && mapping == null) mapping = Re4ArchiveRouting.Map(archive.Files);
+            if (reFrameworkOnly)
+            {
+                var dll = archive.Files.SingleOrDefault(entry => Same(entry.FullName, "dinput8.dll"))
+                    ?? throw new InvalidOperationException("The REFramework archive does not contain dinput8.dll at its root.");
+                mapping = new(StringComparer.Ordinal) { [dll.FullName] = "dinput8.dll" };
+            }
+            if (profile.Id is ("re4" or "dmc5") && destination.Length == 0 && mapping == null) mapping = Re4ArchiveRouting.Map(archive.Files);
             var artwork=ArchiveArtwork.Find(archive.Files);
             var deployFiles=archive.Files.Where(e=>!ArchiveArtwork.Metadata(e.FullName,artwork)).ToArray();
             var skinPlan=autoLinkSkin&&canonicalCharacters?AutoLinkCharacters.Plan(deployFiles.Select(e=>e.FullName),character):null;

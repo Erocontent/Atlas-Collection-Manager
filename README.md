@@ -4,7 +4,7 @@ Atlas is an open-source Windows mod manager for standalone collections that requ
 
 ## Current source version
 
-**v0.21.0** supports **Dead or Alive 5: Last Round** and **Resident Evil 4 Remake**. See the [changelog](CHANGELOG.md) for changes in this Windows beta.
+**v0.21.5** supports **Dead or Alive 5: Last Round**, **Resident Evil 4 Remake**, and **Devil May Cry 5**. See the [changelog](CHANGELOG.md) for changes in this Windows beta.
 
 See the [English tutorial](docs/tutorial-en.md) for setup and collection activation.
 

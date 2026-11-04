@@ -6,7 +6,7 @@ public sealed record ModBatchResult(string[] Completed, string[] Remaining, stri
 
 public sealed class ModBatchService(string libraryRoot, GameProfile profile)
 {
-    private sealed record Review(ModBatchPlan Snapshot, ProfilePlan? Profile, string State, string Game);
+    private sealed record Review(ModBatchPlan Snapshot, ProfilePlan? Profile, string State, string Game, bool SingleDisable = false);
     private readonly Dictionary<ModBatchPlan, Review> reviews = new(ReferenceEqualityComparer.Instance);
     private static bool Same(string a,string b)=>string.Equals(a,b,StringComparison.OrdinalIgnoreCase);
     private static string Folder(string path)=>Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
@@ -22,6 +22,16 @@ public sealed class ModBatchService(string libraryRoot, GameProfile profile)
             var store=new ModProfileStore(libraryRoot,profile);if(store.HasPending)throw new InvalidOperationException("Recover the pending profile switch first.");library.EnsureReady();
             var packages=library.List();if(selected.Any(id=>!packages.Any(p=>Same(p.Id,id))))throw new InvalidOperationException("A selected package is missing.");
             var active=library.GetActive();ProfilePlan? selection=null;string game="";
+            if (action == ModBatchAction.Disable && selected.Length == 1 &&
+                packages.Any(package => Same(package.Id, selected[0]) && package.Kind == "files") &&
+                !File.Exists(Path.Combine(gameFolder, "ReShade.ini")))
+            {
+                game = ModLibrary.ValidateGame(gameFolder, profile);
+                store.CheckSingleDisable(selected[0], game, active, collections);
+                var single = new ModBatchPlan(action, selected, [], selected.ToArray(), [], []);
+                reviews[single] = new(Copy(single), null, State(library), game, SingleDisable: true);
+                return single;
+            }
             if(action!=ModBatchAction.Delete||active.Any(a=>selected.Contains(a.Id,StringComparer.OrdinalIgnoreCase)))
             {
                 game=ModLibrary.ValidateGame(gameFolder,profile);
@@ -49,7 +59,11 @@ public sealed class ModBatchService(string libraryRoot, GameProfile profile)
             var fresh=Preview(plan.Action,plan.Selected,gameFolder,library,collections);
             if(fresh.Problems.Length>0||!Equal(plan,fresh))throw new InvalidOperationException(fresh.Problems.FirstOrDefault()??"Batch changed; review a new preview.");
             var store=new ModProfileStore(libraryRoot,profile);
-            if(review.Profile!=null)store.ApplySelection(review.Profile,gameFolder,library,collections,false);
+            if (reviews[fresh].SingleDisable != review.SingleDisable) throw new InvalidOperationException("Batch changed; review a new preview.");
+            if (review.SingleDisable) library.Disable(fresh.Disable[0], review.Game);
+            else if(review.Profile is {} original && reviews[fresh].Profile is {} validated)
+                store.ApplyValidatedSelection(original,validated,gameFolder,library,collections,false,null);
+            reviews.Remove(fresh);
             if(plan.Action==ModBatchAction.Delete)
                 foreach(var id in plan.Delete){if(store.HasPending)throw new InvalidOperationException("Recover the pending profile switch first.");library.EnsureReady();library.Delete(id);completed.Add(id);}
             else completed.AddRange(plan.Selected);

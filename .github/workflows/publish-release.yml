@@ -2,6 +2,8 @@ name: Publish Atlas beta
 
 on:
   push:
+    branches: [main]
+    paths: ['src/Atlas.App/Atlas.App.csproj']
     tags:
       - 'v*'
   workflow_dispatch:
@@ -34,6 +36,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $env:VERSION = $env:RELEASE_VERSION -creplace '^v', ''
+          if ($env:GITHUB_EVENT_NAME -eq 'push' -and $env:GITHUB_REF -eq 'refs/heads/main') {
+            [xml]$project = Get-Content src/Atlas.App/Atlas.App.csproj -Raw
+            $env:VERSION = [string]($project.SelectSingleNode('/Project/PropertyGroup/Version').InnerText)
+          }
           if ($env:VERSION -notmatch '^\d+\.\d+\.\d+$') {
             throw 'Enter a version such as 0.19.22.'
           }

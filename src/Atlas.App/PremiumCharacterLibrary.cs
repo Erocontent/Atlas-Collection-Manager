@@ -9,13 +9,13 @@ public partial class PremiumWindow
     private readonly HashSet<string> artworkChecked=[];
     private void AddCharacterFilter(C.Panel panel)
     {
-        characterFilter=null;if(game?.Id is not ("doa5" or "re4"))return;
+        characterFilter=null;if(game?.Id is not ("doa5" or "re4" or "dmc5"))return;
         characterFilter=new C.ComboBox{Name="CharacterFilter",Width=185,Margin=new W.Thickness(0,0,8,12)};
         characterFilter.SelectionChanged+=(_,_)=>{if(refreshingMods)return;selectedCharacterFilter=(characterFilter.SelectedItem as C.ComboBoxItem)?.Tag as string;modList?.SelectedItems.Clear();RefreshMods();};panel.Children.Add(characterFilter);
     }
     private void RefreshCharacterFilter(IReadOnlyList<ModPackage> packages)
     {
-        if(characterFilter==null)return;var names=game?.Id == "re4" ? Re4CharacterNames : packages.SelectMany(LibraryCharacters).Distinct().Order().ToArray();
+        if(characterFilter==null)return;var names=EngineCharacterNames ?? packages.SelectMany(LibraryCharacters).Distinct().Order().ToArray();
         if(selectedCharacterFilter!=null&&selectedCharacterFilter!="unassigned"&&!names.Contains(selectedCharacterFilter))selectedCharacterFilter=null;
         characterFilter.Items.Clear();characterFilter.Items.Add(new C.ComboBoxItem{Content=L.T("CharacterAll"),Tag=null});
         foreach(var name in names)characterFilter.Items.Add(new C.ComboBoxItem{Content=name,Tag=name});
@@ -24,8 +24,27 @@ public partial class PremiumWindow
     }
     private static readonly string[] Re4CharacterNames = ["Ada", "Ashley", "Leon"];
 
+    private static readonly string[] Dmc5CharacterNames = ["Dante", "Lady", "Nero", "Nico", "Trish", "V", "Vergil"];
+    private string[]? EngineCharacterNames => game?.Id switch
+    {
+        "re4" => Re4CharacterNames,
+        "dmc5" => Dmc5CharacterNames,
+        _ => null
+    };
+
     private string[] LibraryCharacters(ModPackage mod)
     {
+        if (game?.Id == "dmc5")
+        {
+            if (preferences.Dmc5Characters?.TryGetValue(mod.Id, out var assigned) == true) return assigned;
+            return Dmc5CharacterNames.Where(name => mod.Files.Any(path =>
+                System.Text.RegularExpressions.Regex.IsMatch(path,
+                    @"(?:^|/)character/player/pl\d+[^/]*_" + name + @"(?:pl)?(?:[_/]|$)",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase)) ||
+                (name != "V" && System.Text.RegularExpressions.Regex.IsMatch(mod.Name,
+                    @"(?<![a-z0-9])" + name + @"(?![a-z0-9])",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase))).ToArray();
+        }
         if (game?.Id != "re4") return AutoLinkCharacters.ForPackage(mod);
         if (preferences.Re4Characters?.TryGetValue(mod.Id, out var chosen) == true) return chosen;
         var names = Re4CharacterNames.Where(name => System.Text.RegularExpressions.Regex.IsMatch(mod.Name,
@@ -42,13 +61,13 @@ public partial class PremiumWindow
         return selectedCharacterFilter == "unassigned" ? names.Length == 0 : names.Contains(selectedCharacterFilter);
     }
 
-    private void ChooseRe4Characters(ModPackage mod)
+    private void ChooseEngineCharacters(ModPackage mod)
     {
-        var dialog = ProfileDialog(L.T("CharacterLabel"), 420, 300);
+        var dialog = ProfileDialog(L.T("CharacterLabel"), 420, game?.Id == "dmc5" ? 390 : 300);
         var panel = new C.StackPanel { Margin = new W.Thickness(24) };
         panel.Children.Add(Text(mod.Name, 16));
         var current = LibraryCharacters(mod);
-        var choices = Re4CharacterNames.Select(name => new C.CheckBox
+        var choices = EngineCharacterNames!.Select(name => new C.CheckBox
         {
             Content = name, IsChecked = current.Contains(name), Foreground = SkinBrush("Text"), Margin = new W.Thickness(0, 0, 0, 8)
         }).ToArray();
@@ -56,7 +75,8 @@ public partial class PremiumWindow
         panel.Children.Add(Button(L.T("Save"), () => dialog.DialogResult = true, primary: true));
         dialog.Content = panel;
         if (dialog.ShowDialog() != true) return;
-        (preferences.Re4Characters ??= [])[mod.Id] = choices.Where(choice => choice.IsChecked == true).Select(choice => (string)choice.Content).ToArray();
+        var assignments = game?.Id == "dmc5" ? (preferences.Dmc5Characters ??= []) : (preferences.Re4Characters ??= []);
+        assignments[mod.Id] = choices.Where(choice => choice.IsChecked == true).Select(choice => (string)choice.Content).ToArray();
         store.Save(preferences);
         RefreshMods();
     }

@@ -15,6 +15,7 @@ public partial class PremiumWindow
         public string? Error;
         public string? LocalPath;
         public bool SourceOpened;
+        public double? DirectPercent;
         public NexusJob? Job;
     }
     private sealed class CollectionTransferSession(GameProfile profile,string id,CollectionTransfer[] items)
@@ -23,6 +24,7 @@ public partial class PremiumWindow
         public string Id=id;
         public CollectionTransfer[] Items=items;
         public bool Cancelled;
+        public CancellationTokenSource? DirectCancellation;
         public List<NexusJob> OwnedJobs=[];
     }
     private CollectionTransferSession? collectionTransfer;
@@ -55,16 +57,17 @@ public partial class PremiumWindow
         host.Children.Clear();
         var session=collectionTransfer;
         if(session==null||session.Id!=id||session.Profile.Id!=profile.Id)return;
-        host.Children.Add(Text(L.T(session.Cancelled?"CollectionTransferStopped":"CollectionTransferSummary",
+        if (session.Cancelled) host.Children.Add(Text(L.T("CollectionTransferStopped",
             session.Items.Count(t=>t.State=="CollectionTransferReady"),session.Items.Length),14,true));
         foreach(var item in session.Items)
         {
             var state=item.State;
             if(state=="CollectionTransferWaiting"&&item.Job!=null)
                 state=item.Job.State;
-            if(state=="CollectionTransferWaiting"&&item.LocalPath==null&&(item.Item.Mod.Nexus==null||nexusUser?.IsPremium!=true))state="CollectionManualNeeded";
+            if(state=="CollectionTransferWaiting"&&item.LocalPath==null&&!item.Item.Mod.DirectDownload&&(item.Item.Mod.Nexus==null||nexusUser?.IsPremium!=true))state="CollectionManualNeeded";
             var suffix=state=="NexusDownloading"&&item.Job?.Total>0
-                ?" · "+(100d*item.Job.Bytes/item.Job.Total.Value).ToString("0")+"%":"";
+                ?" · "+(100d*item.Job.Bytes/item.Job.Total.Value).ToString("0")+"%":
+                state=="NexusDownloading" && item.DirectPercent is {} percent ? $" · {percent:0}%" : "";
             if(progress.TryGetValue(item.Item.Mod.Id,out var caption))
                 caption.Text = state == "CollectionTransferReady" ? "" :
                     (state is "NexusFailed" or "CollectionImportFailed") && item.Error != null ? item.Error : L.T(state) + suffix;
@@ -73,7 +76,7 @@ public partial class PremiumWindow
     }
     private bool CollectionDownloadsRunning(string profileId,string id) =>
         collectionTransfer is {Cancelled:false} session&&session.Profile.Id==profileId&&session.Id==id&&
-        session.Items.Any(item=>item.Job?.State is "NexusQueued" or "NexusDownloading");
+        (session.DirectCancellation != null || session.Items.Any(item=>item.Job?.State is "NexusQueued" or "NexusDownloading"));
 
     private async void StartCollectionDownload(string id,bool failuresOnly=false)
     {
@@ -114,11 +117,59 @@ public partial class PremiumWindow
             }
             QueuePendingCollectionDownloads();
             ShowCollections(id);
+            _=ProcessDirectCollectionDownloads(session);
             _=ProcessNexusQueue();
             _=ProcessCollectionImports();
         }
         catch(Exception error){Error(error);}
         finally{collectionPreparing=false;}
+    }
+    private async Task ProcessDirectCollectionDownloads(CollectionTransferSession session)
+    {
+        var items = session.Items.Where(item => item.State == "CollectionTransferWaiting" &&
+            item.Item.Mod.DirectDownload && item.LocalPath == null).ToArray();
+        if (items.Length == 0) return;
+        using var cancellation = new CancellationTokenSource();
+        session.DirectCancellation = cancellation;
+        try
+        {
+            foreach (var item in items)
+            {
+                if (nexusClosed || session.Cancelled) return;
+                item.State = "NexusDownloading";
+                refreshCollectionTransfer?.Invoke();
+                try
+                {
+                    var progress = new Progress<double>(percent =>
+                    {
+                        if (collectionTransfer != session || item.State != "NexusDownloading") return;
+                        item.DirectPercent = percent;
+                        refreshCollectionTransfer?.Invoke();
+                    });
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token);
+                    timeout.CancelAfter(TimeSpan.FromHours(1));
+                    item.LocalPath = await CollectionDirectDownloads.DownloadAsync(item.Item.Mod,
+                        Path.Combine(NexusDownloadFolder, "direct"), progress, timeout.Token);
+                    item.State = "CollectionTransferWaiting";
+                }
+                catch (OperationCanceledException) when (session.Cancelled || nexusClosed) { return; }
+                catch (Exception error)
+                {
+                    item.State = "NexusFailed";
+                    item.Error = L.T("NexusFailed") + " — " + error.Message;
+                    SetTransferFailure(session, item, true);
+                }
+            }
+        }
+        finally
+        {
+            session.DirectCancellation = null;
+            if (!nexusClosed && collectionTransfer == session)
+            {
+                refreshCollectionTransfer?.Invoke();
+                if (!session.Cancelled) _ = ProcessCollectionImports();
+            }
+        }
     }
     private void QueuePendingCollectionDownloads()
     {
@@ -138,6 +189,7 @@ public partial class PremiumWindow
     {
         if(collectionTransfer is not {} session)return;
         session.Cancelled=true;
+        session.DirectCancellation?.Cancel();
         foreach(var job in session.OwnedJobs.Where(j=>j.State is "NexusQueued" or "NexusDownloading"))
         {
             if(job.Cancellation!=null)job.Cancellation.Cancel();else job.State="NexusCancelled";
@@ -182,24 +234,44 @@ public partial class PremiumWindow
             if(!nexusClosed&&!busy&&game?.Id==session.Profile.Id&&commandSection=="collections"&&!nexusPageVisible&&visibleCollectionId==session.Id)ShowCollections(session.Id);
             if(!session.Cancelled&&!nexusClosed&&session.Items.Any(t=>t.State=="CollectionTransferWaiting"&&(t.LocalPath!=null||t.Job?.Download!=null)))_=ProcessCollectionImports();}
     }
+    private static bool CanOpenCollectionSource(CollectionTransfer t) =>
+        (t.Item.Mod.SourceUrl != null || t.Item.Mod.Nexus != null) && !t.SourceOpened&&t.State!="CollectionTransferReady"&&t.State is not ("CollectionTransferImporting" or "NexusDownloading")&&t.Job?.State is not ("NexusQueued" or "NexusDownloading")&&t.LocalPath==null;
+
     private void OpenNextCollectionSource()
     {
         if(collectionTransfer is not {Cancelled:false} session)return;
-        var target=session.Items.FirstOrDefault(t=>!t.SourceOpened&&t.State!="CollectionTransferReady"&&t.State!="CollectionTransferImporting"&&t.Job?.State is not ("NexusQueued" or "NexusDownloading")&&t.LocalPath==null);
+        var target=session.Items.FirstOrDefault(CanOpenCollectionSource);
         if(target==null)return;
         target.SourceOpened=true;
         if(target.Item.Mod.Nexus is {} source)OpenNexusFilePage(new(NexusGames.Domain(session.Profile.Id),source.ModId,source.FileId));
         else if(target.Item.Mod.SourceUrl is {} url)Process.Start(new ProcessStartInfo(url){UseShellExecute=true});
+        refreshCollectionTransfer?.Invoke();
     }
-    private void ChooseCollectionFiles()
+    private void ChooseCollectionFiles(GameProfile profile, string id)
     {
-        if(busy||collectionImporting||collectionTransfer is not {Cancelled:false} session)return;
-        var picker=new Microsoft.Win32.OpenFileDialog{Filter=L.T("ZipFilter"),Multiselect=true,Title=L.T("CollectionTransferLocal")};
-        if(picker.ShowDialog(this)==true){if(picker.FileNames.Length>100){W.MessageBox.Show(this,L.T("CollectionTransferFileLimit"),"Atlas");return;}ReviewCollectionFiles(session,picker.FileNames);}
+        if (busy || collectionImporting || collectionPreparing) return;
+        var picker = new Microsoft.Win32.OpenFileDialog { Filter = L.T("ZipFilter"), Multiselect = true, Title = L.T("CollectionTransferLocal") };
+        if (picker.ShowDialog(this) != true) return;
+        if (picker.FileNames.Length > 100)
+        {
+            W.MessageBox.Show(this, L.T("CollectionTransferFileLimit"), "Atlas");
+            return;
+        }
+        if (collectionTransfer is not { Cancelled: false } session || session.Id != id || session.Profile.Id != profile.Id)
+        {
+            if (collectionTransfer is { Cancelled: false } other && CollectionDownloadsRunning(other.Profile.Id, other.Id)) return;
+            var collection = CurrentCollections().Find(id);
+            if (collection == null) return;
+            var plan = CollectionDownloads.Plan(collection, library!.List());
+            session = new CollectionTransferSession(profile, id, plan.Select(item => new CollectionTransfer(item)).ToArray());
+            collectionTransfer = session;
+        }
+        ReviewCollectionFiles(session, picker.FileNames);
+        refreshCollectionTransfer?.Invoke();
     }
     private void ReviewCollectionFiles(CollectionTransferSession session,string[] paths)
     {
-        var targets=session.Items.Where(t=>t.State!="CollectionTransferReady"&&t.State!="CollectionTransferImporting").ToArray();
+        var targets=session.Items.Where(t=>t.State is not ("CollectionTransferReady" or "CollectionTransferImporting" or "NexusDownloading")).ToArray();
         var dialog=new W.Window{Owner=this,Title=L.T("CollectionTransferReview"),Width=720,Height=540,MinWidth=540,MinHeight=400,
             Background=Brush("#15171B"),Foreground=SkinBrush("Text"),WindowStartupLocation=W.WindowStartupLocation.CenterOwner};
         dialog.Resources.MergedDictionaries.Add(Resources);

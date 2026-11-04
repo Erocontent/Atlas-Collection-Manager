@@ -211,15 +211,52 @@ public partial class PremiumWindow
             EnsureProfileReady();if(selected.Length==0)throw new InvalidOperationException(L.T("ModNoSelection"));var profile=game!;var lib=library!;var folder=GamePath;var collections=CurrentCollections();var batches=new ModBatchService(LibraryRoot(profile),profile);
             busy=true;PageHost.IsEnabled=Navigation.IsEnabled=BottomNavigation.IsEnabled=false;ModBatchPlan plan;Dictionary<string,ModConflictReport> reports;try{plan=await Task.Run(()=>batches.Preview(action,selected.Select(m=>m.Id).ToArray(),folder,lib,collections));reports=await Task.Run(()=>BatchConflictReports(plan,lib,folder));}finally{busy=false;PageHost.IsEnabled=Navigation.IsEnabled=BottomNavigation.IsEnabled=true;}
             var directToggle = selected.Length == 1 && collectionId == null && action != ModBatchAction.Delete && plan.Problems.Length == 0;
-            if ((!directToggle && !PreviewBatch(plan,lib,reports)) || busy) return;busy=true;PageHost.IsEnabled=Navigation.IsEnabled=BottomNavigation.IsEnabled=false;var result=await Task.Run(()=>batches.Apply(plan,folder,lib,collections));busy=false;if(collectionId!=null)ShowCollections(collectionId);else RefreshMods();if(status!=null)status.Text=result.Error==null?L.T("ModBatchDone",result.Completed.Length):L.T("ModBatchPartial",result.Completed.Length,result.Remaining.Length);if(result.Error!=null){var summary=L.T("ModBatchPartial",result.Completed.Length,result.Remaining.Length);var names=selected.ToDictionary(m=>m.Id,m=>m.Name);var outcomes=result.Completed.Select(id=>"✓ "+names.GetValueOrDefault(id,id)).Concat(result.Remaining.Select(id=>"… "+names.GetValueOrDefault(id,id)));Error(new InvalidOperationException(summary+"\n\n"+result.Error+"\n\n"+string.Join("\n",outcomes)));if(status!=null)status.Text=summary;}
+            var keepMessages = false;
+            Action? chooseMessages = action == ModBatchAction.Enable && selected.Length == 1 &&
+                plan.Problems.Length > 0 && reports.TryGetValue(selected[0].Id, out var report) &&
+                lib.CanKeepActiveMessages(selected[0], report) ? () => keepMessages = true : null;
+            if (!directToggle && !PreviewBatch(plan, lib, reports, chooseMessages))
+            {
+                if (!keepMessages || busy) return;
+                busy = true;
+                PageHost.IsEnabled = Navigation.IsEnabled = BottomNavigation.IsEnabled = false;
+                plan = await Task.Run(() =>
+                {
+                    lib.KeepActiveMessages(selected[0].Id, folder);
+                    return batches.Preview(action, [selected[0].Id], folder, lib, collections);
+                });
+                if (plan.Problems.Length > 0)
+                    throw new InvalidOperationException(string.Join(Environment.NewLine, plan.Problems));
+            }
+            else if (busy) return;
+            busy=true;PageHost.IsEnabled=Navigation.IsEnabled=BottomNavigation.IsEnabled=false;var result=await Task.Run(()=>batches.Apply(plan,folder,lib,collections));busy=false;if(collectionId!=null)ShowCollections(collectionId);else RefreshMods();if(status!=null)status.Text=result.Error==null?L.T("ModBatchDone",result.Completed.Length):L.T("ModBatchPartial",result.Completed.Length,result.Remaining.Length);if(result.Error!=null){var summary=L.T("ModBatchPartial",result.Completed.Length,result.Remaining.Length);var names=selected.ToDictionary(m=>m.Id,m=>m.Name);var outcomes=result.Completed.Select(id=>"✓ "+names.GetValueOrDefault(id,id)).Concat(result.Remaining.Select(id=>"… "+names.GetValueOrDefault(id,id)));Error(new InvalidOperationException(summary+"\n\n"+result.Error+"\n\n"+string.Join("\n",outcomes)));if(status!=null)status.Text=summary;}
         }
         catch(Exception error){Error(error);}finally{busy=false;PageHost.IsEnabled=Navigation.IsEnabled=BottomNavigation.IsEnabled=true;}
     }
-    private bool PreviewBatch(ModBatchPlan plan,ModLibrary lib,IReadOnlyDictionary<string,ModConflictReport>? reports=null)
+    private bool PreviewBatch(ModBatchPlan plan,ModLibrary lib,IReadOnlyDictionary<string,ModConflictReport>? reports=null, Action? chooseMessages=null)
     {
-        var dialog=ProfileDialog(L.T("ModBatchPreview"),740,660);var dock=new C.DockPanel{Margin=new W.Thickness(26)};var actions=new C.WrapPanel{HorizontalAlignment=W.HorizontalAlignment.Right};actions.Children.Add(Button(L.T("Cancel"),()=>dialog.DialogResult=false));var apply=Button(L.T(plan.Action==ModBatchAction.Delete?"ModBatchConfirmDelete":"ModBatchApply"),()=>dialog.DialogResult=true,"ConfirmBatchButton",true);apply.IsEnabled=plan.Problems.Length==0;actions.Children.Add(apply);C.DockPanel.SetDock(actions,C.Dock.Bottom);dock.Children.Add(actions);
-        var panel=new C.StackPanel();panel.Children.Add(Text(L.T("ModBatchPreview"),25));if(plan.Action==ModBatchAction.Delete)panel.Children.Add(Text(L.T("ModBatchDeleteNotice"),14));panel.Children.Add(Text(L.T("ModBatchKeep"),12,true));var packages=lib.List().ToDictionary(m=>m.Id);
+        var dialog=ProfileDialog(L.T("ModBatchPreview"),700,plan.Problems.Length > 0 ? 620 : Math.Clamp(230 + 34 * plan.Selected.Length, 300, 600));var dock=new C.DockPanel{Margin=new W.Thickness(26)};var actions=new C.WrapPanel{HorizontalAlignment=W.HorizontalAlignment.Right};actions.Children.Add(Button(L.T("Cancel"),()=>dialog.DialogResult=false));var apply=Button(L.T(plan.Action==ModBatchAction.Delete?"ModBatchConfirmDelete":"ModBatchApply"),()=>dialog.DialogResult=true,"ConfirmBatchButton",true);apply.IsEnabled=plan.Problems.Length==0;actions.Children.Add(apply);C.DockPanel.SetDock(actions,C.Dock.Bottom);dock.Children.Add(actions);
+        var groups = new[] { ("ProfileDisable", plan.Disable), ("ProfileEnable", plan.Enable), ("ModBatchDeleteCount", plan.Delete) };
+        var heading = new C.StackPanel();
+        heading.Children.Add(SecondaryText(L.T("ModBatchPreview"), 23, false, true));
+        heading.Children.Add(SecondaryText(string.Join("  ·  ", groups.Where(group => group.Item2.Length > 0).Select(group => L.T(group.Item1, group.Item2.Length))), 13, true));
+        if (plan.Action == ModBatchAction.Delete) heading.Children.Add(SecondaryText(L.T("ModBatchDeleteNotice"), 13, true));
+        var header = SecondarySurface(heading, new W.Thickness(12, 8, 12, 8));
+        header.Margin = new W.Thickness(0, 0, 0, 10);
+        C.DockPanel.SetDock(header, C.Dock.Top);
+        dock.Children.Add(header);
+        var panel = new C.StackPanel { Margin = new W.Thickness(0, 0, 12, 0) };
+        var packages = lib.List().ToDictionary(mod => mod.Id);
         if(plan.Problems.Length>0){panel.Children.Add(Text(L.T("ModBatchProblems"),18));foreach(var problem in plan.Problems)panel.Children.Add(Text(problem,14));}
+        if (chooseMessages != null)
+        {
+            panel.Children.Add(Text(L.T("Dmc5KeepMessagesHint"), 13, true));
+            panel.Children.Add(Button(L.T("Dmc5KeepMessages"), () =>
+            {
+                chooseMessages();
+                dialog.DialogResult = false;
+            }, primary: true));
+        }
         if(plan.Action==ModBatchAction.Enable&&plan.Problems.Length>0&&reports!=null&&reports.Count>0&&reports.Count<plan.Selected.Length)
         {
             panel.Children.Add(SecondaryText(L.T("ModConflictSelectionLimit",reports.Count),13,true));
@@ -229,7 +266,21 @@ public partial class PremiumWindow
             inspect.Children.Add(Button(L.T("ModShowConflicts"),()=>{if(picker.SelectedItem is C.ComboBoxItem {Tag:ModPackage item})ShowModConflicts(item,dialog,plan);},"BatchInspectConflictButton"));panel.Children.Add(inspect);
         }
         if(reports!=null)foreach(var report in reports.Where(p=>p.Value.Files.Length>0)){panel.Children.Add(SecondaryText(L.T("ModConflictFiles")+" · "+(packages.TryGetValue(report.Key,out var item)?item.Name:report.Key),18,false,true));AppendConflictFiles(panel,report.Value,30);}
-        foreach(var group in new[]{("ProfileDisable",plan.Disable),("ProfileEnable",plan.Enable),("ModBatchDeleteCount",plan.Delete)})if(group.Item2.Length>0){panel.Children.Add(Text(L.T(group.Item1,group.Item2.Length),18));foreach(var id in group.Item2)panel.Children.Add(Text(packages.TryGetValue(id,out var mod)?mod.Name:id,13,true));}
+        foreach (var (label, ids) in groups)
+        {
+            if (ids.Length == 0) continue;
+            var section = new C.StackPanel();
+            section.Children.Add(SecondaryText(L.T(label, ids.Length), 16, false, true));
+            foreach (var id in ids)
+            {
+                var name = packages.TryGetValue(id, out var mod) ? mod.Name : id;
+                var archive = NexusPackageLabel(id);
+                var row = SecondaryText(string.IsNullOrWhiteSpace(archive) ? name : $"{name}  ·  {archive}", 13);
+                row.Margin = new W.Thickness(0);
+                section.Children.Add(new C.Border { Child = row, Padding = new W.Thickness(0, 6, 0, 6), BorderBrush = SkinBrush("Stroke"), BorderThickness = new W.Thickness(0, 1, 0, 0) });
+            }
+            panel.Children.Add(SecondarySurface(section, new W.Thickness(12, 8, 12, 8)));
+        }
         if(plan.Enable.Length+plan.Disable.Length+plan.Delete.Length==0&&plan.Problems.Length==0)panel.Children.Add(Text(L.T("ModBatchNone"),15,true));dock.Children.Add(new C.ScrollViewer{Content=panel,VerticalScrollBarVisibility=C.ScrollBarVisibility.Auto});dialog.Content=dock;return dialog.ShowDialog()==true;
     }
 }

@@ -37,7 +37,7 @@ public partial class PremiumWindow
         if (mod.Kind == "variants") galleryActions.Children.Add(Button(L.T("ModVariants"), () => ChooseModVariant(mod), "InspectorVariantsButton"));
         var galleryButton=Button(L.T("ModPreview"),()=>ShowModGallery(mod),"InspectorGalleryButton");galleryButton.IsEnabled=info.Images.Length>0;galleryActions.Children.Add(galleryButton);
         var changeCover=Button(L.T("ModCover"),()=>AddModImage(mod,true,true),"InspectorCoverButton");changeCover.IsEnabled=!CurrentProfiles().HasPending;galleryActions.Children.Add(changeCover);
-        if (game?.Id == "re4") galleryActions.Children.Add(Button(L.T("CharacterLabel"), () => ChooseRe4Characters(mod), "Re4ModCharactersButton"));
+        if (EngineCharacterNames != null) galleryActions.Children.Add(Button(L.T("CharacterLabel"), () => ChooseEngineCharacters(mod), "Re4ModCharactersButton"));
         foreach (var action in galleryActions.Children.OfType<C.Button>())
         {
             action.Padding = new W.Thickness(9, 0, 9, 0);
@@ -81,7 +81,14 @@ public partial class PremiumWindow
         var visual=modVisualStatusSnapshot?.GetValueOrDefault(mod.Id);AddModIndicators(inspectorPanel,visual);
         inspectorPanel.Children.Add(new C.Border { Height = 1, Background = SkinBrush("Stroke"), Margin = new W.Thickness(0, 8, 0, 10) });
 
-        var toggle=Button((active?"⊘  ":"✓  ")+L.T(active?"Disable":"Enable"),()=>ReviewBatch(active?ModBatchAction.Disable:ModBatchAction.Enable),"InspectorToggleButton",!active);
+        if (!active && game?.Id == "dmc5" && mod.ExcludedMessages is { Length: > 0 })
+            inspectorPanel.Children.Add(Button(L.T("Dmc5RestoreMessages"), () => Run(() =>
+            {
+                EnsureProfileReady();
+                library!.RestorePackageMessages(mod.Id);
+                RefreshMods();
+            }, L.T("Ready"))));
+                var toggle=Button((active?"⊘  ":"✓  ")+L.T(active?"Disable":"Enable"),()=>ReviewBatch(active?ModBatchAction.Disable:ModBatchAction.Enable),"InspectorToggleButton",!active);
         toggle.Margin=new W.Thickness(0,0,0,8);toggle.Padding=new W.Thickness(16,14,16,14);toggle.IsEnabled=!CurrentProfiles().HasPending;inspectorPanel.Children.Add(toggle);
         var more=Button("↗  "+L.T("ModPage"),()=>ShowModPage(mod),"InspectorDetailsButton");more.BorderBrush=SkinBrush("Stroke");more.BorderThickness=new W.Thickness(1);more.Background=M.Brushes.Transparent;more.Margin=new W.Thickness(0);inspectorPanel.Children.Add(more);
     }

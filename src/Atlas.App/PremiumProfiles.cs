@@ -121,10 +121,47 @@ public partial class PremiumWindow
     }
     private bool PreviewProfile(ProfilePlan plan,ModLibrary lib,bool collection=false, bool deactivate=false)
     {
-        var dialog=ProfileDialog(L.T(collection?(deactivate?"CollectionDeactivate":"CollectionActivate"):"ProfilePreview"),700,650);var dock=new C.DockPanel{Margin=new W.Thickness(26)};var actions=new C.WrapPanel{HorizontalAlignment=W.HorizontalAlignment.Right};actions.Children.Add(Button(L.T("Cancel"),()=>dialog.DialogResult=false));actions.Children.Add(Button(L.T("ProfileConfirm"),()=>dialog.DialogResult=true,"ConfirmProfileApplyButton",true));C.DockPanel.SetDock(actions,C.Dock.Bottom);dock.Children.Add(actions);
-        var panel=new C.StackPanel();panel.Children.Add(Text(plan.Profile.Name,26));if(!collection)panel.Children.Add(Text(L.T("ProfilePreviewHint"),13,true));var mods=lib.List().ToDictionary(m=>m.Id);
-        foreach(var group in new[]{("ProfileDisable",plan.Disable),("ProfileEnable",plan.Enable),("ProfileKeep",plan.Keep)}){panel.Children.Add(Text(L.T(group.Item1,group.Item2.Length),17));foreach(var id in group.Item2)panel.Children.Add(Text(mods.TryGetValue(id,out var mod)?mod.Name:id,13,true));}
-        if(!collection)panel.Children.Add(Text(L.T("ProfilePreset")+": "+(plan.Preset??L.T("ProfileClearPreset")),14));dock.Children.Add(new C.ScrollViewer{Content=panel,VerticalScrollBarVisibility=C.ScrollBarVisibility.Auto});dialog.Content=dock;return dialog.ShowDialog()==true;
+        var dialog = ProfileDialog(L.T(collection ? (deactivate ? "CollectionDeactivate" : "CollectionActivate") : "ProfilePreview"), 700, 650);
+        var dock = new C.DockPanel { Margin = new W.Thickness(24) };
+        var actions = new C.WrapPanel { HorizontalAlignment = W.HorizontalAlignment.Right, Margin = new W.Thickness(0, 10, 0, 0) };
+        actions.Children.Add(Button(L.T("Cancel"), () => dialog.DialogResult = false));
+        actions.Children.Add(Button(L.T(collection ? "CollectionApply" : "ProfileConfirm"), () => dialog.DialogResult = true, "ConfirmProfileApplyButton", true));
+        C.DockPanel.SetDock(actions, C.Dock.Bottom);
+        dock.Children.Add(actions);
+
+        var groups = new[] { ("ProfileDisable", plan.Disable), ("ProfileEnable", plan.Enable), ("ProfileKeep", plan.Keep) };
+        var heading = new C.StackPanel();
+        heading.Children.Add(SecondaryText(plan.Profile.Name, 26, false, true));
+        if (collection)
+            heading.Children.Add(SecondaryText(string.Join("  ·  ", groups.Where(group => group.Item2.Length > 0).Select(group => L.T(group.Item1, group.Item2.Length))), 13, true));
+        else
+            heading.Children.Add(SecondaryText(L.T("ProfilePreviewHint"), 13, true));
+        var header = SecondarySurface(heading, new W.Thickness(16));
+        header.Margin = new W.Thickness(0, 0, 0, 12);
+        C.DockPanel.SetDock(header, C.Dock.Top);
+        dock.Children.Add(header);
+
+        var panel = new C.StackPanel { Margin = new W.Thickness(0, 0, 14, 0) };
+        var mods = lib.List().ToDictionary(mod => mod.Id);
+        foreach (var (label, ids) in groups)
+        {
+            if (ids.Length == 0 && collection) continue;
+            var section = new C.StackPanel();
+            section.Children.Add(SecondaryText(L.T(label, ids.Length), 16, false, true));
+            foreach (var id in ids)
+            {
+                var name = mods.TryGetValue(id, out var mod) ? mod.Name : id;
+                var archive = collection ? NexusPackageLabel(id) : null;
+                section.Children.Add(SecondaryText(string.IsNullOrWhiteSpace(archive) ? name : $"{name}  ·  {archive}", 13, true));
+            }
+            var card = SecondarySurface(section, new W.Thickness(14, 10, 14, 10));
+            card.Margin = new W.Thickness(0, 0, 0, 8);
+            panel.Children.Add(card);
+        }
+        if (!collection) panel.Children.Add(Text(L.T("ProfilePreset") + ": " + (plan.Preset ?? L.T("ProfileClearPreset")), 14));
+        dock.Children.Add(new C.ScrollViewer { Content = panel, VerticalScrollBarVisibility = C.ScrollBarVisibility.Auto });
+        dialog.Content = dock;
+        return dialog.ShowDialog() == true;
     }
     private async void RecoverProfile()
     {

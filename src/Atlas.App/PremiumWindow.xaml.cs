@@ -31,7 +31,7 @@ public partial class PremiumWindow : W.Window
         SourceInitialized+=(_,_)=>AttachWorkAreaBounds();
         StateChanged+=(_,_)=>RefreshCaptionControls();
         Closing += (_, e) => e.Cancel = busy;
-        Closed += (_, _) => { nexusClosed = true; nexusSignIn?.Cancel(); foreach (var job in nexusJobs) job.Cancellation?.Cancel(); nexusClient?.Dispose(); };
+        Closed += (_, _) => { nexusClosed = true; collectionTransfer?.DirectCancellation?.Cancel(); nexusSignIn?.Cancel(); foreach (var job in nexusJobs) job.Cancellation?.Cancel(); nexusClient?.Dispose(); };
         DragOver += (_, e) => { e.Effects = !busy && e.Data.GetDataPresent(W.DataFormats.FileDrop) ? W.DragDropEffects.Copy : W.DragDropEffects.None; e.Handled = true; };
         Drop += (_, e) => Guard(() => {
             var paths = e.Data.GetData(W.DataFormats.FileDrop) as string[];

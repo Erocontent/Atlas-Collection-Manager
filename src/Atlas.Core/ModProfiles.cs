@@ -8,6 +8,8 @@ public sealed class ProfileFileConflict(ModPackage first, ModPackage second, str
 {
     public ModPackage First { get; } = first;
     public ModPackage Second { get; } = second;
+    public string FirstPath { get; } = firstPath;
+    public string SecondPath { get; } = secondPath;
 }
 
 public sealed record CollectionApplyProgress(int Completed, int Total, string PackageId);
@@ -87,6 +89,14 @@ public sealed class ModProfileStore
         var done=new HashSet<string>();var visiting=new HashSet<string>();var result=new List<string>();
         void Visit(string id){if(done.Contains(id))return;if(!visiting.Add(id))throw new InvalidOperationException("Profile dependency cycle.");foreach(var dep in edges[id])Visit(dep);visiting.Remove(id);done.Add(id);result.Add(id);}
         foreach(var id in wanted)Visit(id);return result.ToArray();
+    }
+    internal void CheckSingleDisable(string id, string game, IReadOnlyList<ActiveMod> active, CollectionStore collections)
+    {
+        Ready();
+        var current = active.Where(mod => Same(mod.Game, game)).Select(mod => mod.Id).ToArray();
+        if (!current.Contains(id, StringComparer.OrdinalIgnoreCase))
+            throw new InvalidOperationException(L.T("NotActiveHere"));
+        Order(current.Where(package => !Same(package, id)), collections, true);
     }
     public ProfilePlan Preview(string id,string gameFolder,ModLibrary library,CollectionStore collections)
     {
@@ -222,23 +232,24 @@ public sealed class ModProfileStore
     private Guard[] Snapshot(string game,IEnumerable<string> paths)=>paths.Distinct(StringComparer.OrdinalIgnoreCase).Select(p=>new Guard(p,File.Exists(SafePaths.Resolve(game,p))?Hash(SafePaths.Resolve(game,p)):null)).ToArray();
     private void CheckGuards(SwitchJournal journal) => VerifyGuards(journal);
 
-    private SwitchJournal RefreshGuards(SwitchJournal journal)
+    private SwitchJournal RefreshGuards(SwitchJournal journal, bool touchedOnly = false)
     {
-        var guards = new Guard[journal.Guards.Length];
-        VerifyGuards(journal, guards);
+        var guards = (Guard[])journal.Guards.Clone();
+        VerifyGuards(journal, guards, touchedOnly);
         return journal with { Guards = guards };
     }
 
-    private void VerifyGuards(SwitchJournal journal, Guard[]? verified = null)
+    private void VerifyGuards(SwitchJournal journal, Guard[]? verified = null, bool touchedOnly = false, bool allowNext = true)
     {
         for (var i = 0; i < journal.Guards.Length; i++)
         {
             var guard = journal.Guards[i];
+            if (touchedOnly && !guard.AllowsNext) continue;
             var path = SafePaths.Resolve(journal.Game, guard.Path);
             if (Directory.Exists(path))
                 throw new InvalidOperationException("External change prevents profile recovery: " + guard.Path);
             var hash = File.Exists(path) ? Hash(path) : null;
-            if (hash != guard.Hash && (!guard.AllowsNext || hash != guard.NextHash))
+            if (hash != guard.Hash && (!allowNext || !guard.AllowsNext || hash != guard.NextHash))
                 throw new InvalidOperationException("External change prevents profile recovery: " + guard.Path);
             if (verified != null)
                 verified[i] = new Guard(guard.Path, hash);
@@ -272,7 +283,7 @@ public sealed class ModProfileStore
         ApplyValidatedSelection(plan, fresh, gameFolder, library, collections, trackApplied, progress);
     }
 
-    private void ApplyValidatedSelection(ProfilePlan plan, ProfilePlan fresh, string gameFolder, ModLibrary library, CollectionStore collections, bool trackApplied, IProgress<CollectionApplyProgress>? progress)
+    internal void ApplyValidatedSelection(ProfilePlan plan, ProfilePlan fresh, string gameFolder, ModLibrary library, CollectionStore collections, bool trackApplied, IProgress<CollectionApplyProgress>? progress)
     {
         if(!plan.Profile.ModIds.ToHashSet().SetEquals(fresh.Profile.ModIds)||!Same(plan.Profile.Preset??"",fresh.Profile.Preset??"")||plan.Profile.Name!=fresh.Profile.Name||!plan.Enable.ToHashSet().SetEquals(fresh.Enable)||!plan.Disable.ToHashSet().SetEquals(fresh.Disable)||!plan.Keep.ToHashSet().SetEquals(fresh.Keep))throw new InvalidOperationException("Profile or game state changed; review a new preview.");
         var game=Folder(gameFolder);var ini=SafePaths.Resolve(game,"ReShade.ini");
@@ -284,8 +295,30 @@ public sealed class ModProfileStore
             var completed = 0;
             var total = fresh.Disable.Length + fresh.Enable.Length;
             void Report(string id) => progress?.Report(new(completed, total, id));
-            foreach(var id in fresh.Disable){Report(id);CheckGuards(journal);journal=Intent(journal,library,id,false);Save(Pending,journal);library.Disable(id,game);journal=RefreshGuards(journal);Save(Pending,journal);completed++;}
-            foreach(var id in fresh.Enable){Report(id);CheckGuards(journal);collections.EnsureCanEnable(id,library,game);journal=Intent(journal,library,id,true);Save(Pending,journal);library.Enable(id,game);journal=RefreshGuards(journal);Save(Pending,journal);completed++;}
+            foreach (var id in fresh.Disable)
+            {
+                Report(id);
+                // Intent marks this step's files. Keep all other guards for final validation and recovery.
+                journal = Intent(journal, library, id, false);
+                VerifyGuards(journal, touchedOnly: true, allowNext: false);
+                Save(Pending, journal);
+                library.Disable(id, game);
+                journal = RefreshGuards(journal, touchedOnly: true);
+                Save(Pending, journal);
+                completed++;
+            }
+            foreach (var id in fresh.Enable)
+            {
+                Report(id);
+                collections.EnsureCanEnable(id, library, game);
+                journal = Intent(journal, library, id, true);
+                VerifyGuards(journal, touchedOnly: true, allowNext: false);
+                Save(Pending, journal);
+                library.Enable(id, game);
+                journal = RefreshGuards(journal, touchedOnly: true);
+                Save(Pending, journal);
+                completed++;
+            }
             CheckGuards(journal);
             if(trackApplied)
             {

@@ -9,9 +9,9 @@ public sealed partial class ModLibrary
     private sealed record VariantSource(string Name, string? Parent, string Root, string? Screenshot);
     private sealed record VariantManifest(ModVariant[] Options, int Selected);
 
-    internal static string[]? VariantTargets(ModArchives.Archive archive) => InspectVariants(archive)?.Targets;
+    internal static string[]? VariantTargets(ModArchives.Archive archive, GameProfile profile) => InspectVariants(archive, profile)?.Targets;
 
-    private static (VariantSource[] Choices, Dictionary<string, ModArchives.Entry>[] Payloads, string[] Targets)? InspectVariants(ModArchives.Archive archive)
+    private static (VariantSource[] Choices, Dictionary<string, ModArchives.Entry>[] Payloads, string[] Targets)? InspectVariants(ModArchives.Archive archive, GameProfile profile)
     {
         var metadata = archive.Files.Where(entry => Path.GetFileName(entry.FullName).Equals("modinfo.ini", StringComparison.OrdinalIgnoreCase)).ToArray();
         if (metadata.Length is < 2 or > 100) return null;
@@ -30,7 +30,7 @@ public sealed partial class ModLibrary
             return new VariantSource(fields.GetValueOrDefault("name") ?? "", fields.GetValueOrDefault("addonfor"),
                 entry.FullName[..(slash + 1)], fields.GetValueOrDefault("screenshot"));
         }).ToArray();
-        if (InspectPakVariants(archive, sources) is {} paks) return paks;
+        if (profile.Id == "re4" && InspectPakVariants(archive, sources) is {} paks) return paks;
         if (InspectNumberedVariants(archive, sources) is {} numbered) return numbered;
         var parents = sources.Where(source => string.IsNullOrWhiteSpace(source.Parent)).ToArray();
         if (sources.Any(source => source.Name.Length is 0 or > 200)) return null;
@@ -110,9 +110,9 @@ public sealed partial class ModLibrary
 
     private ModPackage? ImportVariants(string archivePath, string? name, string category, string destination)
     {
-        if (profile.Id != "re4" || destination.Length != 0) return null;
+        if (profile.Id is not ("re4" or "dmc5") || destination.Length != 0) return null;
         using var archive = ModArchives.Open(archivePath);
-        if (InspectVariants(archive) is not {} group) return null;
+        if (InspectVariants(archive, profile) is not {} group) return null;
         var (choices, payloads, targets) = group;
         var parent = choices[0];
         var id = Guid.NewGuid().ToString("N");
@@ -170,11 +170,18 @@ public sealed partial class ModLibrary
 
     private ModPackage SelectedVariantPackage(ModPackage package)
     {
-        if (package.Kind != "variants") return package;
-        var state = VariantState(package.Id);
-        return state.Options[state.Selected].Files is {} files ? package with { Files = files } : package;
+        if (package.Kind == "variants")
+        {
+            var state = VariantState(package.Id);
+            if (state.Options[state.Selected].Files is {} files) package = package with { Files = files };
+        }
+        if (profile.Id == "dmc5" && package.ExcludedMessages is { Length: > 0 } excluded)
+        {
+            var paths = excluded.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            package = package with { Files = package.Files.Where(file => !IsDmc5Message(file) || !paths.Contains(file)).ToArray() };
+        }
+        return package;
     }
-
     internal Func<string, string> PackageContentResolver(ModPackage package)
     {
         var root = Package(package.Id);

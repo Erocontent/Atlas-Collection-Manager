@@ -1,26 +1,24 @@
-# Changelog
+# Atlas Collection Manager 0.21.5 Beta
 
-## 0.21.0
+### Devil May Cry 5
 
-### Resident Evil 4 Remake
-
-- Improved archive routing for supported REFramework scripts and loose game assets, including packages with extra wrapper folders.
-- Added variant selection for supported mod archives and character filters for Ada, Ashley, and Leon.
-- Improved conflict review with affected file paths and distinct archive names when downloads share a Nexus mod page. Choose which mod takes priority.
+- Added Devil May Cry 5 to the game library, with character filters and editable character assignments.
+- Improved import routing for wrapped loose-file mods and added variant selection for supported archives.
+- Added a choice of which mod supplies overlapping message files when the selected skins can otherwise coexist.
+- Added support for the official REFramework nightly archive as a DLL-only import for non-VR use. Loose-file loading remains a game-side setting.
 
 ### Collections and downloads
 
-- Added sidebar progress for collection downloads and for applying mods, visible outside Collections.
-- Reduced repeated file verification during collection activation and deactivation, including when removing active mods while deleting a collection. File recovery checks remain in place.
-- Improved Nexus file metadata handling and display of file versions. The download folder can be changed or opened directly from Settings.
+- Added direct HTTPS archive downloads for collections exported by Atlas Collection Editor 0.4. Atlas verifies the declared SHA-256 and imports downloads disabled.
+- Redesigned collection import and activation reviews with compact rows, clearer archive labels, and fixed action footers.
+- Condensed collection progress and actions into a single panel. Retry, cancel, and source controls appear when relevant.
+- Reduced repeated file verification when applying or removing collections, while retaining final checks and recovery.
 
-### Mod library and interface
+### Mod library
 
-- Updated grid, list, and compact layouts with aligned cards, resizable compact columns, and indicators for content types, variants, and conflicts.
-- Reworked the mod details panel with a cover-first gallery and navigation between preview images.
-- Streamlined single-mod enable and disable actions, and dimmed game covers when the game location is missing.
-- Refreshed Atlas branding and the language selector. The sidebar now displays the actual app version.
+- Reworked batch review with a compact layout for small selections and separate conflict details.
+- Streamlined disabling a single file mod while preserving dependency checks and file restoration.
 
 ### Installation
 
-Extract the Windows x64 ZIP and run `AtlasCollectionManager.exe`. See the [English player guide](docs/tutorial-en.md) for setup.
+Extract the Windows x64 ZIP and run AtlasCollectionManager.exe. See the [player guide](https://github.com/Erocontent/Atlas-Collection-Manager/blob/main/docs/tutorial-en.md) for setup.

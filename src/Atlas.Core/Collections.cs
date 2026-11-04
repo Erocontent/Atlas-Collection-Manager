@@ -6,7 +6,7 @@ using System.Text.RegularExpressions;
 namespace Atlas.Core;
 
 public sealed record CollectionManifest(int SchemaVersion,string Id,string Name,string Author,string Version,string GameId,CollectionMod[] Mods,string Description="");
-public sealed record CollectionMod(string Id,string Name,string Version,string? Category,string Description,string? SourceUrl,string? FileName,string? Sha256,bool Recommended,string[] Dependencies,CollectionInstallation Installation,NexusCollectionSource? Nexus=null);
+public sealed record CollectionMod(string Id,string Name,string Version,string? Category,string Description,string? SourceUrl,string? FileName,string? Sha256,bool Recommended,string[] Dependencies,CollectionInstallation Installation,NexusCollectionSource? Nexus=null, [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] bool DirectDownload=false);
 public sealed record NexusCollectionSource(long ModId,long FileId);
 public sealed record CollectionInstallation(string Type,string Destination="",string? Character=null);
 public sealed record CollectionEntryState(string ModId,bool Selected,string Category,string? PackageId=null,string? PackageVersion=null);
@@ -63,6 +63,10 @@ public static class CollectionReader
                 }
             }
             if(mod.FileName!=null){Text(mod.FileName,255,true);SafePaths.Relative(mod.FileName);if(mod.FileName.Contains('/')||mod.FileName.Contains('\\'))throw new InvalidOperationException("File name must be a single safe name.");}
+            if (mod.DirectDownload && (mod.Nexus != null || mod.SourceUrl == null || mod.Sha256 == null ||
+                !Uri.TryCreate(mod.SourceUrl, UriKind.Absolute, out var download) ||
+                Path.GetExtension(download.AbsolutePath).ToLowerInvariant() is not (".zip" or ".rar" or ".7z")))
+                throw new InvalidOperationException("Direct downloads require an HTTPS archive URL and SHA-256.");
             if(mod.Sha256!=null && !Regex.IsMatch(mod.Sha256,@"\A[0-9a-fA-F]{64}\z"))throw new InvalidOperationException("Invalid SHA256.");
             if(mod.Installation==null || mod.Installation.Type is not ("game-files" or "autolink-skin" or "reshade"))throw new InvalidOperationException("Unsupported installation type.");
             if(mod.Installation.Character!=null&&(mod.Installation.Type!="autolink-skin"||!AutoLinkCharacters.Names.Contains(mod.Installation.Character)))throw new InvalidOperationException("Invalid AutoLink character.");
@@ -180,7 +184,12 @@ public sealed class CollectionStore
         using var zipLease=new FileStream(zip,FileMode.Open,FileAccess.Read,FileShare.Read);
         if(mod.Sha256!=null){if(!Convert.ToHexString(SHA256.HashData(zipLease)).Equals(mod.Sha256,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("ZIP SHA256 does not match the collection.");}
         ModPackage package;
-        if(mod.Installation.Type=="reshade"){var plan=ReShadePackage.Inspect(zip)??throw new InvalidOperationException("ZIP is not a supported ReShade package.");package=library.ImportReShade(zip,mod.Name,plan);}
+        if (profile.Id == "dmc5" && mod.DirectDownload && mod.Installation is { Type: "game-files", Destination: "" } &&
+            mod.SourceUrl is {} source && new Uri(source) is { Host: "github.com" } uri &&
+            uri.AbsolutePath.StartsWith("/praydog/REFramework-nightly/releases/download/", StringComparison.OrdinalIgnoreCase) &&
+            uri.AbsolutePath.EndsWith("/REFramework.zip", StringComparison.OrdinalIgnoreCase))
+            package = library.ImportReFramework(zip, mod.Name, entry.Category);
+        else if(mod.Installation.Type=="reshade"){var plan=ReShadePackage.Inspect(zip)??throw new InvalidOperationException("ZIP is not a supported ReShade package.");package=library.ImportReShade(zip,mod.Name,plan);}
         else {
             var skin=mod.Installation.Type=="autolink-skin";var canonical=skin&&(mod.Installation.Character!=null||ImportAnalysis.Inspect(zip,GameCatalog.Get("doa5")).Kind==ArchiveImportKind.AutoLinkSkin);
             package=library.ImportZip(zip,mod.Name,entry.Category,mod.Installation.Destination,skin,mod.Installation.Character,canonical);
