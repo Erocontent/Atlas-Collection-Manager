@@ -8,11 +8,11 @@ namespace Atlas.App;
 
 public partial class PremiumWindow
 {
-    private readonly Dictionary<string, long> libraryNexusIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, NexusCollectionSource> libraryNexusIds = new(StringComparer.OrdinalIgnoreCase);
 
     private long? LibraryNexusId(GameProfile profile, ModDetails details)
     {
-        if (libraryNexusIds.TryGetValue(details.Id, out var linkedId)) return linkedId;
+        if (libraryNexusIds.TryGetValue(details.Id, out var linkedId)) return linkedId.ModId;
         if (!Uri.TryCreate(details.SourceUrl, UriKind.Absolute, out var source) ||
             source.Scheme != "https" || !source.IsDefaultPort || source.UserInfo.Length != 0 ||
             source.Host is not ("www.nexusmods.com" or "nexusmods.com")) return null;
@@ -47,7 +47,7 @@ public partial class PremiumWindow
             var sources = collection.Manifest.Mods.ToDictionary(mod => mod.Id, StringComparer.OrdinalIgnoreCase);
             foreach (var entry in collection.Entries)
                 if (entry.PackageId != null && sources.TryGetValue(entry.ModId, out var mod) && mod.Nexus is {} source)
-                    libraryNexusIds.TryAdd(entry.PackageId, source.ModId);
+                    libraryNexusIds.TryAdd(entry.PackageId, source);
         }
     }
 
@@ -228,17 +228,20 @@ public partial class PremiumWindow
             var existing = 0;
             var unlinked = 0;
             var missing = new Dictionary<long, string>();
+            var metadataRequests = new Dictionary<NexusCollectionSource, string>();
             foreach (var package in currentLibrary.List())
             {
                 var details = metadata.Get(package);
+                if (VersionUnknown(details.Version) && libraryNexusIds.TryGetValue(package.Id, out var file) &&
+                    ExactNexusFile(profile, file) == null) metadataRequests.TryAdd(file, package.Name);
                 if (LibraryCover(metadata, details, 96) != null) existing++;
                 else if (LibraryNexusId(profile, details) is {} id) missing.TryAdd(id, package.Name);
                 else unlinked++;
             }
-            coverTotal = missing.Count;
+            coverTotal = missing.Count + metadataRequests.Count;
             CoverProgressChanged?.Invoke();
             var downloaded = 0;
-            if (missing.Count > 0)
+            if (coverTotal > 0)
             {
                 var key = nexusCredentials.Load() ?? throw new InvalidOperationException(L.T("NexusNoKey"));
                 using var client = nexusFactory(key);
@@ -257,6 +260,22 @@ public partial class PremiumWindow
                         System.Text.Json.JsonException or OperationCanceledException or FormatException)
                     {
                         errors.Add(name + " — " + error.Message);
+                    }
+                    coverCompleted++;
+                    CoverProgressChanged?.Invoke();
+                }
+                foreach (var (source, name) in metadataRequests)
+                {
+                    if (nexusClosed || timeout.IsCancellationRequested) break;
+                    try
+                    {
+                        var file = await client.GetFileAsync(new(NexusGames.Domain(profile.Id), source.ModId, source.FileId), timeout.Token);
+                        SaveExactNexusFile(profile, source, file);
+                    }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException or
+                        System.Net.Http.HttpRequestException or System.Text.Json.JsonException or OperationCanceledException or FormatException or KeyNotFoundException)
+                    {
+                        errors.Add(name + " (#" + source.FileId + ") — " + error.Message);
                     }
                     coverCompleted++;
                     CoverProgressChanged?.Invoke();

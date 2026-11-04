@@ -38,7 +38,9 @@ public partial class PremiumWindow
         if(library==null||modList==null||refreshingMods)return;refreshingMods=true;
         try
         {
-            var selection=SelectedMods().Select(m=>m.Id).ToHashSet();var packages=library.List();var active=library.GetActive();var metadata=CurrentModDetails();var records=packages.ToDictionary(m=>m.Id,m=>metadata.Get(m));
+
+            var selection=SelectedMods().Select(m=>m.Id).ToHashSet();var packages=library.List();var active=library.GetActive();var metadata=CurrentModDetails();
+            IndexLibraryConflicts(packages);
             libraryNexusIds.Clear();
             IReadOnlyDictionary<string,ModStatus>? visualStatus=null;
             try
@@ -47,8 +49,11 @@ public partial class PremiumWindow
                 IndexCoverSources(collections);
                 visualStatus=ModVisualStatus.Evaluate(packages,active,collections,GamePath);
             }catch(Exception error)when(error is System.Text.Json.JsonException or IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException){ }
+            var records = packages.ToDictionary(mod => mod.Id, mod => WithNexusVersion(metadata.Get(mod)));
             modVisualStatusSnapshot=visualStatus;
+            if (compactHeader != null) compactHeader.Visibility = preferences.ModLibraryView != "grid" ? W.Visibility.Visible : W.Visibility.Collapsed;
             var gridMode=preferences.ModLibraryView=="grid";if(modLegacyDetailsHost!=null)modLegacyDetailsHost.Visibility=gridMode?W.Visibility.Collapsed:W.Visibility.Visible;if(modDropHint!=null)modDropHint.Visibility=gridMode?W.Visibility.Collapsed:W.Visibility.Visible;var panel=new W.FrameworkElementFactory(gridMode?typeof(C.WrapPanel):typeof(C.VirtualizingStackPanel));modList.ItemsPanel=new C.ItemsPanelTemplate(panel);C.ScrollViewer.SetCanContentScroll(modList,!gridMode);
+            C.ScrollViewer.SetVerticalScrollBarVisibility(modList, gridMode ? C.ScrollBarVisibility.Auto : C.ScrollBarVisibility.Visible);
             if(modGridButton!=null)modGridButton.Style=(W.Style)FindResource(gridMode?"Primary":(object)typeof(C.Button));if(modListButton!=null)modListButton.Style=(W.Style)FindResource(preferences.ModLibraryView=="list"?"Primary":(object)typeof(C.Button));
             if(modCompactButton!=null)modCompactButton.Style=(W.Style)FindResource(preferences.ModLibraryView=="compact"?"Primary":(object)typeof(C.Button));
             string Category(ModPackage m)=>string.IsNullOrWhiteSpace(records[m.Id].Category)?L.T("Uncategorized"):records[m.Id].Category;
@@ -96,47 +101,26 @@ public partial class PremiumWindow
                         return badge;
                     }
                     badges.Children.Add(Badge(Category(mod), secondary: true));
-                    if (!string.IsNullOrWhiteSpace(info.Version))
-                        badges.Children.Add(Badge("v" + info.Version.TrimStart('v', 'V')));
+
                     var state = State(mod);
                     badges.Children.Add(Badge(L.T(state switch
                     {
                         "enabled" => "Enabled", "other" => "OtherFolder", _ => "Disabled"
                     }), active: state == "enabled"));
                     text.Children.Add(badges);
+
                     row.Children.Add(text.AtColumn(1));
                     AddModIndicators(text,visualStatus?.GetValueOrDefault(mod.Id));
-                    var item = new C.ListBoxItem { Content = row, Tag = mod, HorizontalContentAlignment = W.HorizontalAlignment.Stretch, Padding = new W.Thickness(12, 9, 12, 9) };modList.Items.Add(item);if(selection.Contains(mod.Id))item.IsSelected=true;
+                    var item = new C.ListBoxItem { Content = CompactModRow(mod, info, row), Tag = mod, Style = (W.Style)FindResource("CompactModItem"), Padding = new W.Thickness(10, 6, 10, 6) };modList.Items.Add(item);if(selection.Contains(mod.Id))item.IsSelected=true;
                     continue;
                 }
-                var compactInfo = records[mod.Id];
-                var compactRow = new C.DockPanel();
-                if (!string.IsNullOrWhiteSpace(compactInfo.Version))
-                {
-                    var version = Text(compactInfo.Version, 12, true);
-                    version.Margin = new W.Thickness(10, 0, 4, 0);
-                    version.Foreground = SkinBrush("Accent");
-                    version.VerticalAlignment = W.VerticalAlignment.Center;
-                    C.DockPanel.SetDock(version, C.Dock.Right);
-                    compactRow.Children.Add(version);
-                    var divider = new C.Border { Width = 1, Height = 16, Background = SkinBrush("Stroke"), Margin = new W.Thickness(12, 0, 0, 0) };
-                    C.DockPanel.SetDock(divider, C.Dock.Right);
-                    compactRow.Children.Add(divider);
-                }
-                var name = Text(mod.Name, 14);
-                name.Margin = new W.Thickness(0);
-                name.TextWrapping = W.TextWrapping.NoWrap;
-                name.TextTrimming = W.TextTrimming.CharacterEllipsis;
-                name.VerticalAlignment = W.VerticalAlignment.Center;
-                compactRow.Children.Add(name);
+                var compactRow = CompactModRow(mod, records[mod.Id]);
                 var compactItem = new C.ListBoxItem
                 {
                     Content = compactRow,
                     Tag = mod,
                     ToolTip = mod.Name,
-                    HorizontalContentAlignment = W.HorizontalAlignment.Stretch,
-                    Padding = new W.Thickness(10, 5, 10, 5),
-                    Margin = new W.Thickness(0, 0, 0, 2)
+                    Style = (W.Style)FindResource("CompactModItem")
                 };
                 modList.Items.Add(compactItem);if(selection.Contains(mod.Id))compactItem.IsSelected=true;
             }
@@ -161,7 +145,6 @@ public partial class PremiumWindow
     private void AddModIndicators(C.Panel panel,ModStatus? status)
     {
         if(status==null){var unavailable=Text("● "+L.T("ModStatusUnavailable"),11,true);unavailable.Margin=new W.Thickness(0,2,0,2);panel.Children.Add(unavailable);return;}
-        if(status.HasConflict){var badge=Text("● "+L.T("ModConflictBadge"),11);badge.Foreground=Brush("#EAC47F");badge.Margin=new W.Thickness(0,2,0,2);badge.ToolTip=string.Join("\n",status.Conflicts);panel.Children.Add(badge);}
         if(status.HasMissingDependencies){var badge=Text("● "+L.T("ModMissingDependencyBadge"),11);badge.Foreground=Brush("#F19A9A");badge.Margin=new W.Thickness(0,2,0,2);badge.ToolTip=string.Join("\n",status.MissingDependencies);panel.Children.Add(badge);}
     }
     private C.ListBoxItem ModCard(ModPackage mod,ModDetails info,ModDetailsStore metadata,string category,string state,ModStatus? status)
@@ -174,7 +157,7 @@ public partial class PremiumWindow
     }
     private void ShowModPage(ModPackage package)
     {
-        if(busy)return;var mod=library!.List().Single(m=>m.Id==package.Id);var metadata=CurrentModDetails();var info=metadata.Get(mod);var profile=game!;
+        if(busy)return;var mod=library!.List().Single(m=>m.Id==package.Id);var metadata=CurrentModDetails();var info=WithNexusVersion(metadata.Get(mod));var profile=game!;
         profilesPageVisible=nexusPageVisible=false;modList=null;shadePanel=null;status=null;NavigationBuild();var page=Page();var root=new C.StackPanel();page.Children.Add(new C.ScrollViewer{Content=root,Padding=new W.Thickness(0,0,12,0),VerticalScrollBarVisibility=C.ScrollBarVisibility.Auto});
         root.Children.Add(Button(L.T("ModBack"),()=>OpenGame(profile),"ModBackButton"));root.Children.Add(SecondaryHeader(mod.Name,L.T("ModDescription"),profile.Name,"\uE8F1"));root.Children.Add(Text(info.Category+" · "+L.T("ModVersion")+": "+(info.Version.Length==0?L.T("ModUnknown"):info.Version),14,true));root.Children.Add(Text(L.T("ModImported",info.ImportedAt.ToLocalTime().ToString("g")),12,true));
         var actions=new C.WrapPanel();actions.Children.Add(Button(L.T("ModPreview"),()=>ShowModGallery(mod),"ModPageGalleryButton",true));actions.Children.Add(Button(L.T("ModMetadata"),()=>EditModDetails(mod),"EditModDetailsButton"));actions.Children.Add(Button(L.T("ModCover"),()=>AddModImage(mod,true),"AddModCoverButton"));actions.Children.Add(Button(L.T("ModPreviewImage"),()=>AddModImage(mod,false),"AddModPreviewButton"));actions.IsEnabled=!CurrentProfiles().HasPending;root.Children.Add(actions);
@@ -208,6 +191,18 @@ public partial class PremiumWindow
             busy=true;PageHost.IsEnabled=Navigation.IsEnabled=BottomNavigation.IsEnabled=false;await Task.Run(()=>metadata.AddImage(mod.Id,Visuals.NormalizeModImage(file),cover));busy=false;if(afterSave!=null)afterSave();else if(returnToLibrary){RefreshMods();SelectLibraryMod(mod.Id);}else ShowModPage(mod);
         }catch(Exception error){Error(error);}finally{busy=false;PageHost.IsEnabled=Navigation.IsEnabled=BottomNavigation.IsEnabled=true;}
     }
+    private C.Button? batchEnable, batchDisable;
+
+    private void RefreshBatchToggleButtons()
+    {
+        if (batchEnable == null || batchDisable == null || library == null) return;
+        var selected = SelectedMods();
+        var active = selected.Length == 1 ? library.GetActive().FirstOrDefault(item => item.Id == selected[0].Id) : null;
+        batchEnable.Visibility = selected.Length == 1 && active != null ? W.Visibility.Collapsed : W.Visibility.Visible;
+        batchDisable.Visibility = selected.Length == 1 && (active == null || !string.Equals(active.Game, GamePath, StringComparison.OrdinalIgnoreCase))
+            ? W.Visibility.Collapsed : W.Visibility.Visible;
+    }
+
     private void ReviewBatch(ModBatchAction action)=>ReviewBatchPackages(action,SelectedMods());
     private async void ReviewBatchPackages(ModBatchAction action,ModPackage[] selected,string? collectionId=null)
     {
@@ -215,7 +210,8 @@ public partial class PremiumWindow
         {
             EnsureProfileReady();if(selected.Length==0)throw new InvalidOperationException(L.T("ModNoSelection"));var profile=game!;var lib=library!;var folder=GamePath;var collections=CurrentCollections();var batches=new ModBatchService(LibraryRoot(profile),profile);
             busy=true;PageHost.IsEnabled=Navigation.IsEnabled=BottomNavigation.IsEnabled=false;ModBatchPlan plan;Dictionary<string,ModConflictReport> reports;try{plan=await Task.Run(()=>batches.Preview(action,selected.Select(m=>m.Id).ToArray(),folder,lib,collections));reports=await Task.Run(()=>BatchConflictReports(plan,lib,folder));}finally{busy=false;PageHost.IsEnabled=Navigation.IsEnabled=BottomNavigation.IsEnabled=true;}
-            if(!PreviewBatch(plan,lib,reports)||busy)return;busy=true;PageHost.IsEnabled=Navigation.IsEnabled=BottomNavigation.IsEnabled=false;var result=await Task.Run(()=>batches.Apply(plan,folder,lib,collections));busy=false;if(collectionId!=null)ShowCollections(collectionId);else OpenGame(profile);if(status!=null)status.Text=result.Error==null?L.T("ModBatchDone",result.Completed.Length):L.T("ModBatchPartial",result.Completed.Length,result.Remaining.Length);if(result.Error!=null){var summary=L.T("ModBatchPartial",result.Completed.Length,result.Remaining.Length);var names=selected.ToDictionary(m=>m.Id,m=>m.Name);var outcomes=result.Completed.Select(id=>"✓ "+names.GetValueOrDefault(id,id)).Concat(result.Remaining.Select(id=>"… "+names.GetValueOrDefault(id,id)));Error(new InvalidOperationException(summary+"\n\n"+result.Error+"\n\n"+string.Join("\n",outcomes)));if(status!=null)status.Text=summary;}
+            var directToggle = selected.Length == 1 && collectionId == null && action != ModBatchAction.Delete && plan.Problems.Length == 0;
+            if ((!directToggle && !PreviewBatch(plan,lib,reports)) || busy) return;busy=true;PageHost.IsEnabled=Navigation.IsEnabled=BottomNavigation.IsEnabled=false;var result=await Task.Run(()=>batches.Apply(plan,folder,lib,collections));busy=false;if(collectionId!=null)ShowCollections(collectionId);else RefreshMods();if(status!=null)status.Text=result.Error==null?L.T("ModBatchDone",result.Completed.Length):L.T("ModBatchPartial",result.Completed.Length,result.Remaining.Length);if(result.Error!=null){var summary=L.T("ModBatchPartial",result.Completed.Length,result.Remaining.Length);var names=selected.ToDictionary(m=>m.Id,m=>m.Name);var outcomes=result.Completed.Select(id=>"✓ "+names.GetValueOrDefault(id,id)).Concat(result.Remaining.Select(id=>"… "+names.GetValueOrDefault(id,id)));Error(new InvalidOperationException(summary+"\n\n"+result.Error+"\n\n"+string.Join("\n",outcomes)));if(status!=null)status.Text=summary;}
         }
         catch(Exception error){Error(error);}finally{busy=false;PageHost.IsEnabled=Navigation.IsEnabled=BottomNavigation.IsEnabled=true;}
     }

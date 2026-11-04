@@ -11,7 +11,7 @@ public static class ImportAnalysis
     private static readonly HashSet<string> Tools=new([".exe",".msi",".bat",".cmd",".ps1",".lnk",".jar"],StringComparer.OrdinalIgnoreCase);
     public static ArchiveImportAnalysis Inspect(string archivePath,GameProfile profile)
     {
-        string[] files;using(var archive=ModArchives.Open(archivePath)){var artwork=ArchiveArtwork.Find(archive.Files);files=archive.Files.Where(f=>!ArchiveArtwork.Metadata(f.FullName,artwork)).Select(f=>f.FullName).ToArray();}
+        string[] files;using(var archive=ModArchives.Open(archivePath)){if(profile.Id=="re4"&&ModLibrary.VariantTargets(archive) is {} targets)return new(ArchiveImportKind.DirectFiles,targets,"",["SmartModVariants"]);if(profile.Id=="re4"&&Re4ArchiveRouting.Map(archive.Files) is {} mapping)return new(ArchiveImportKind.DirectFiles,mapping.Values.ToArray(),"",["SmartVerifyInstructions"]);var artwork=ArchiveArtwork.Find(archive.Files);files=archive.Files.Where(f=>!ArchiveArtwork.Metadata(f.FullName,artwork)).Select(f=>f.FullName).ToArray();}
         if(files.Length==0)throw new InvalidOperationException(L.T("ZipEmpty"));
         var warnings=new List<string>();
         var tools=files.Any(p=>Tools.Contains(Path.GetExtension(p)));
@@ -26,6 +26,14 @@ public static class ImportAnalysis
             var skins=payload.Any(p=>Path.GetExtension(p).Equals(".tmc",StringComparison.OrdinalIgnoreCase))&&payload.All(AutoLinkCharacters.SkinPayload);
             if(skins){var skinPlan=AutoLinkCharacters.Plan(files);return new(ArchiveImportKind.AutoLinkSkin,files,"AutoLink",["SmartRequiresAutoLink"],null,skinPlan);}
             if(payload.All(p=>p.StartsWith("AutoLink/",StringComparison.OrdinalIgnoreCase)))return new(ArchiveImportKind.DirectFiles,files,"",["SmartVerifyInstructions"]);
+        }
+        if (profile.Id == "re4" && !tools)
+        {
+            if (files.Length == 1 && files[0].Equals("dinput8.dll", StringComparison.OrdinalIgnoreCase))
+                return new(ArchiveImportKind.DirectFiles, files, "", ["SmartVerifyInstructions"]);
+            if (payload.Length > 0 && payload.All(path => path.StartsWith("reframework/autorun/", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith("reframework/plugins/", StringComparison.OrdinalIgnoreCase)))
+                return new(ArchiveImportKind.DirectFiles, files, "", ["SmartRequiresReFramework"]);
         }
         warnings.Add("SmartUnknownHelp");
         if(dll)warnings.Add("SmartDllHelp");

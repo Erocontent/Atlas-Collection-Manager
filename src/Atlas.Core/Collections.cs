@@ -135,27 +135,35 @@ public sealed class CollectionStore
         return SafePaths.Resolve(root,id.ToLowerInvariant()+".progress");
     }
 
-    public HashSet<string> ReadFailures(string id)
+    public HashSet<string> ReadFailures(string id) => ReadFailureDetails(id).Keys.ToHashSet();
+
+    public Dictionary<string, string> ReadFailureDetails(string id)
     {
         try
         {
-            var path=FailurePath(id);
-            if(File.Exists(path)&&new FileInfo(path).Length<=100000)
-                return JsonSerializer.Deserialize<HashSet<string>>(File.ReadAllText(path))??[];
+            var path = FailurePath(id);
+            if (File.Exists(path) && new FileInfo(path).Length <= 2 * 1024 * 1024)
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(path));
+                if (document.RootElement.ValueKind == JsonValueKind.Array)
+                    return (document.RootElement.Deserialize<HashSet<string>>() ?? []).ToDictionary(key => key, _ => "");
+                return document.RootElement.Deserialize<Dictionary<string, string>>() ?? [];
+            }
         }
-        catch(Exception error) when(error is IOException or UnauthorizedAccessException or InvalidOperationException or JsonException){}
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException or JsonException) { }
         return [];
     }
 
-    public void SetFailure(string id,string fingerprint,bool failed)
+    public void SetFailure(string id, string fingerprint, bool failed, string? detail = null)
     {
         try
         {
-            var entries=ReadFailures(id);
-            if(!(failed?entries.Add(fingerprint):entries.Remove(fingerprint)))return;
-            AtomicFiles.Write(FailurePath(id),stream=>JsonSerializer.Serialize(stream,entries));
+            var entries = ReadFailureDetails(id);
+            if (failed) entries[fingerprint] = detail == null ? "" : detail[..Math.Min(detail.Length, 512)];
+            else if (!entries.Remove(fingerprint)) return;
+            AtomicFiles.Write(FailurePath(id), stream => JsonSerializer.Serialize(stream, entries));
         }
-        catch(Exception error) when(error is IOException or UnauthorizedAccessException or InvalidOperationException){}
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException) { }
     }
 
     public void Delete(string id)

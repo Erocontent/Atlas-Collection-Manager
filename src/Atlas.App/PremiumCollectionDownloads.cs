@@ -38,13 +38,16 @@ public partial class PremiumWindow
 
     private void SetTransferFailure(CollectionTransferSession session,CollectionTransfer target,bool failed) =>
         new CollectionStore(LibraryRoot(session.Profile),session.Profile)
-            .SetFailure(session.Id,TransferKey(target.Item.Mod),failed);
+            .SetFailure(session.Id,TransferKey(target.Item.Mod),failed, target.Error);
 
     private void RecordCollectionDownloadFailure(NexusJob job)
     {
         if(collectionTransfer is not {} session)return;
         foreach(var target in session.Items.Where(item=>ReferenceEquals(item.Job,job)))
+        {
+            target.Error = L.T("NexusFailed") + " — " + job.Error;
             SetTransferFailure(session,target,true);
+        }
     }
 
     private void DrawCollectionTransfer(C.StackPanel host,GameProfile profile,string id,Dictionary<string,C.TextBlock> progress)
@@ -62,7 +65,9 @@ public partial class PremiumWindow
             if(state=="CollectionTransferWaiting"&&item.LocalPath==null&&(item.Item.Mod.Nexus==null||nexusUser?.IsPremium!=true))state="CollectionManualNeeded";
             var suffix=state=="NexusDownloading"&&item.Job?.Total>0
                 ?" · "+(100d*item.Job.Bytes/item.Job.Total.Value).ToString("0")+"%":"";
-            if(progress.TryGetValue(item.Item.Mod.Id,out var caption))caption.Text=L.T(state)+suffix+(item.Error==null?"":" — "+item.Error);
+            if(progress.TryGetValue(item.Item.Mod.Id,out var caption))
+                caption.Text = state == "CollectionTransferReady" ? "" :
+                    (state is "NexusFailed" or "CollectionImportFailed") && item.Error != null ? item.Error : L.T(state) + suffix;
 
         }
     }
@@ -137,7 +142,7 @@ public partial class PremiumWindow
         {
             if(job.Cancellation!=null)job.Cancellation.Cancel();else job.State="NexusCancelled";
         }
-        refreshCollectionTransfer?.Invoke();
+        RefreshNexusQueue();
     }
     private void BindCollectionDownload(NexusJob job)
     {
@@ -169,7 +174,7 @@ public partial class PremiumWindow
                     await Task.Run(()=>store.AttachZip(session.Id,target.Item.Mod.Id,path,new ModLibrary(LibraryRoot(session.Profile),session.Profile)));
                     target.State="CollectionTransferReady";target.Error=null;SetTransferFailure(session,target,false);
                 }
-                catch(Exception error){target.State="CollectionImportFailed";target.Error=error is InvalidOperationException?error.Message:L.T("CollectionImportFailed");SetTransferFailure(session,target,true);}
+                catch(Exception error){target.State="CollectionImportFailed";target.Error=L.T("CollectionImportFailed") + " — " + error.Message;SetTransferFailure(session,target,true);}
                 finally{busy=false;PageHost.IsEnabled=Navigation.IsEnabled=BottomNavigation.IsEnabled=true;refreshCollectionTransfer?.Invoke();}
             }
         }

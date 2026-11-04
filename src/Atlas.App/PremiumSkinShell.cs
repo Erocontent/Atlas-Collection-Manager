@@ -47,12 +47,8 @@ public partial class PremiumWindow
         ShellBrand.Margin = IsCinematic ? new W.Thickness(22, 0, 0, 0) : new W.Thickness(0);
         ShellBrand.HorizontalAlignment = IsCinematic ? W.HorizontalAlignment.Left : W.HorizontalAlignment.Center;
         ShellBrand.TextAlignment = W.TextAlignment.Center;
-        ShellBrand.FontSize = IsCinematic?17:21;
         ShellBrand.Inlines.Clear();
-        if(IsCinematic)ShellBrand.Inlines.Add(new W.Documents.Run("▲ "){Foreground=SkinBrush("Accent"),FontSize=20});
-        else {var mark=new System.Windows.Shapes.Path{Data=M.Geometry.Parse("M0,42 L24,0 L48,42 L37,42 L24,19 L11,42 Z M17,42 L24,29 L31,42 Z"),Fill=SkinBrush("Accent"),Stretch=M.Stretch.Uniform};ShellBrand.Inlines.Add(new W.Documents.InlineUIContainer(new C.Viewbox{Width=40,Height=38,Child=mark,Margin=new W.Thickness(0,0,10,-4)}));}
-        ShellBrand.Inlines.Add(new W.Documents.Run(IsCinematic?"ATLAS":"A T L A S"));
-        if(!IsCinematic){ShellBrand.Inlines.Add(new W.Documents.LineBreak());ShellBrand.Inlines.Add(new W.Documents.InlineUIContainer(new C.Viewbox { Width = 140, Height = 19, Stretch = M.Stretch.Uniform, Child = new C.TextBlock { Text = "Collection Manager", FontSize = 12, FontWeight = W.FontWeights.Normal, Foreground = SkinBrush("Muted") } }));}
+        ShellBrand.Inlines.Add(new W.Documents.InlineUIContainer(BuildAtlasBrand()));
         C.Grid.SetRow(PageHost,IsCinematic?1:0);C.Grid.SetRowSpan(PageHost,IsCinematic?1:2);
         SidebarDock.Margin=IsCinematic?new W.Thickness(18,16,18,24):new W.Thickness(0,8,0,24);
         PageHost.Margin = IsCinematic ? new W.Thickness(36, 24, 36, 24) : new W.Thickness(0);

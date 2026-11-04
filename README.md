@@ -4,7 +4,7 @@ Atlas is an open-source Windows mod manager for standalone collections that requ
 
 ## Current source version
 
-**v0.19.22** supports **Dead or Alive 5: Last Round** and **Resident Evil 4 Remake**. This update restores a compatible ReShade runtime backed up when AutoLink replaced its DirectX 9 DLL.
+**v0.21.0** supports **Dead or Alive 5: Last Round** and **Resident Evil 4 Remake**. See the [changelog](CHANGELOG.md) for changes in this Windows beta.
 
 See the [English tutorial](docs/tutorial-en.md) for setup and collection activation.
 

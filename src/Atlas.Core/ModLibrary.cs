@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace Atlas.Core;
 
-public sealed class ModLibrary
+public sealed partial class ModLibrary
 {
     private readonly string root;
     private readonly GameProfile profile;
@@ -31,7 +31,7 @@ public sealed class ModLibrary
     private List<ActiveMod> Active() => File.Exists(State) ? Read<List<ActiveMod>>(State) : [];
     public IReadOnlyList<ActiveMod> GetActive() => Active();
     public IReadOnlyList<ModPackage> List() => Directory.EnumerateDirectories(Path.Combine(root, "packages"))
-        .Where(p => File.Exists(Path.Combine(p, "mod.json"))).Select(p => Read<ModPackage>(Path.Combine(p, "mod.json"))).OrderBy(m => m.Name).ToList();
+        .Where(p => File.Exists(Path.Combine(p, "mod.json"))).Select(p => SelectedVariantPackage(Read<ModPackage>(Path.Combine(p, "mod.json")))).OrderBy(m => m.Name).ToList();
 
     public void Delete(string id)
     {
@@ -52,7 +52,7 @@ public sealed class ModLibrary
         Directory.Delete(folder, true);
     }
     public ModPackage ImportZip(string zip, string name, string category, string destination, bool autoLinkSkin = false,string? character=null,bool canonicalCharacters=false)
-        => ImportArchive(zip, name, category, destination, autoLinkSkin, null,character,canonicalCharacters);
+        => ImportVariants(zip, name, category, destination) ?? ImportArchive(zip, name, category, destination, autoLinkSkin, null,character,canonicalCharacters);
     public ModPackage ImportReShade(string zip, string name, ReShadeImportPlan plan)
         => ImportArchive(zip, name, "ReShade", "", false, plan);
     private ModPackage ImportArchive(string zip, string name, string category, string destination, bool autoLinkSkin, ReShadeImportPlan? reShade,string? character=null,bool canonicalCharacters=false)
@@ -69,6 +69,7 @@ public sealed class ModLibrary
         try
         {
             using var archive = ModArchives.Open(zip);
+            if (profile.Id == "re4" && destination.Length == 0 && mapping == null) mapping = Re4ArchiveRouting.Map(archive.Files);
             var artwork=ArchiveArtwork.Find(archive.Files);
             var deployFiles=archive.Files.Where(e=>!ArchiveArtwork.Metadata(e.FullName,artwork)).ToArray();
             var skinPlan=autoLinkSkin&&canonicalCharacters?AutoLinkCharacters.Plan(deployFiles.Select(e=>e.FullName),character):null;
@@ -178,12 +179,45 @@ public sealed class ModLibrary
         }
     }
 
+    public bool CanRepairRe4Script(ModPackage mod)
+    {
+        if (profile.Id != "re4" || mod.Kind != "files" || mod.Destination.Length != 0 ||
+            mod.Files is not [var file] || file.Contains('/') || !file.EndsWith(".lua", StringComparison.OrdinalIgnoreCase)) return false;
+        var path = PackageContentResolver(mod)(file);
+        if (!File.Exists(path) || new FileInfo(path).Length > 262144) return false;
+        return System.Text.RegularExpressions.Regex.IsMatch(File.ReadAllText(path), @"\b(?:re\s*\.\s*on_\w+|sdk\s*\.\s*hook)\s*\(");
+    }
+
+    public void RepairRe4Script(string id, string game)
+    {
+        NoPending();
+        var manifest = SafePaths.Resolve(Package(id), "mod.json");
+        var original = Read<ModPackage>(manifest);
+        if (!CanRepairRe4Script(original)) throw new InvalidOperationException("This script cannot be rerouted automatically.");
+        var active = Active().SingleOrDefault(item => item.Id == id);
+        if (active != null) Disable(id, game);
+        try
+        {
+            Save(manifest, original with { Destination = Re4ArchiveRouting.Autorun });
+            if (active != null) Enable(id, game);
+        }
+        catch
+        {
+            if (!File.Exists(Pending) && !Active().Any(item => item.Id == id))
+            {
+                Save(manifest, original);
+                if (active != null) Enable(id, game);
+            }
+            throw;
+        }
+    }
+
     public void Enable(string id, string game)
     {
         game = ValidateGame(game, profile); NoPending();
         var active = Active();
         if (active.Any(m => m.Id == id)) throw new InvalidOperationException(L.T("AlreadyActive"));
-        var mod = Read<ModPackage>(Path.Combine(Package(id), "mod.json"));
+        var mod = SelectedVariantPackage(Read<ModPackage>(Path.Combine(Package(id), "mod.json")));
         if (mod.Kind == "reshade")
         {
             var conflicts = ReShadePresets.ConflictingRuntimeFiles(game, mod.Files);
@@ -195,7 +229,8 @@ public sealed class ModLibrary
                     throw new InvalidOperationException(L.T("ReShadeArchitectureMismatch"));
             }
         }
-        var content = Path.Combine(Package(id), "content");
+
+        var content = PackageContentResolver(mod);
         var files = new List<ManagedFile>();
         foreach (var file in mod.Files)
         {
@@ -207,7 +242,7 @@ public sealed class ModLibrary
             if (Directory.Exists(target)) throw new InvalidOperationException(L.T("DirectoryInsteadFile", relative));
             for (var parent = Path.GetDirectoryName(target); parent != null && !Same(parent, game); parent = Path.GetDirectoryName(parent))
                 if (File.Exists(parent)) throw new InvalidOperationException(L.T("FileInsteadDirectory", parent));
-            files.Add(new ManagedFile(relative, Hash(SafePaths.Resolve(content, file)), File.Exists(target)));
+            files.Add(new ManagedFile(relative, Hash(content(file)), File.Exists(target)));
         }
         foreach (var file in files.Where(f => f.HadOriginal))
         {
@@ -231,7 +266,7 @@ public sealed class ModLibrary
             {
                 var target = SafePaths.Resolve(game, files[i].Path);
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-                AtomicFiles.Copy(SafePaths.Resolve(content, mod.Files[i]), target);
+                AtomicFiles.Copy(content(mod.Files[i]), target);
             }
             active.Add(installed); Save(State, active); File.Delete(Pending);
         }

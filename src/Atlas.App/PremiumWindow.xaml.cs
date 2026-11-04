@@ -72,13 +72,16 @@ public partial class PremiumWindow : W.Window
         if (game != null) navigation.Children.Add(IsCinematic?Button(L.T("Collections"), ShowCollections, "CollectionsButton"):CommandNavigation("Collections","\uE8F1",ShowCollections,"CollectionsButton",commandSection=="collections"));
         if (game != null) navigation.Children.Add(IsCinematic ? Button(L.T("Covers"), ShowCovers, "CoversButton") : CommandNavigation("Covers", "\uEB9F", ShowCovers, "CoversButton", commandSection == "covers"));
         if (game != null) navigation.Children.Add(IsCinematic?Button(L.T("Profiles"), ShowProfiles, "ProfilesButton"):CommandNavigation("Profiles","\uE77B",ShowProfiles,"ProfilesButton",commandSection=="profiles"));
+        BuildSidebarDownloads(utilities);
+        BuildCollectionApplyPanel(utilities);
         utilities.Children.Add(IsCinematic?Button(L.T("Settings"), ShowSettings, "SettingsButton"):CommandNavigation("Settings","\uE713",ShowSettings,"SettingsButton",commandSection=="settings"));
 
         var languages = new C.ComboBox { Name = "LanguageSelector", ItemsSource = L.Languages, SelectedItem = L.Languages.FirstOrDefault(x => x.Code == preferences.Language), Width=IsCinematic?125:double.NaN,Margin = new W.Thickness(0, 0, 0, IsCinematic?8:18) };
         languages.SelectionChanged += (_, _) => Guard(() => { if (languages.SelectedItem is LanguageOption option && option.Code != preferences.Language) { preferences.Language = option.Code; store.Save(preferences); L.SetLanguage(option.Code); if (nexusPageVisible) ShowNexus(); else if(settingsPageVisible)ShowSettings();else if (commandSection == "covers") ShowCovers(); else if (profilesPageVisible) ShowProfiles(); else if (game is {} current) OpenGame(current); else Home(); } });
-        if(!IsCinematic){languages.Margin=new W.Thickness(12,4,12,16);languages.Height=50;languages.FontSize=14;}
+        languages.Style = (W.Style)FindResource("LauncherLanguageSelector");
+        if(!IsCinematic){languages.Margin=new W.Thickness(12,4,12,16);languages.Height=46;languages.FontSize=14;}
         utilities.Children.Add(languages);
-        if(!IsCinematic){var footer=SecondaryText(L.T("SidebarFooter"),13,true);footer.Name="SidebarVersion";footer.Margin=new W.Thickness(28,0,28,0);utilities.Children.Add(footer);}
+        if(!IsCinematic){var footer=SecondaryText("Version - " + (typeof(PremiumWindow).Assembly.GetName().Version?.ToString(3) ?? "0.0.0"),13,true);footer.Name="SidebarVersion";footer.Margin=new W.Thickness(28,0,28,0);utilities.Children.Add(footer);}
     }
     private C.Grid Page()
     {
@@ -115,7 +118,7 @@ public partial class PremiumWindow : W.Window
     {
         RefreshOrganizedMods();
     }
-    private void ShowDetails() {if(selectionCaption!=null)selectionCaption.Text=L.T("ModSelection",SelectedMods().Length);if (details != null) details.Text = Selected is {} mod ? L.T("SelectedDetails", mod.Name, mod.Destination == "" ? L.T("RootGame") : mod.Destination) + string.Join("\n", mod.Files.Take(100)) : L.T("EmptyDetails");RefreshSkinInspector(); }
+    private void ShowDetails() { RefreshBatchToggleButtons();if(selectionCaption!=null)selectionCaption.Text=L.T("ModSelection",SelectedMods().Length);if (details != null) details.Text = Selected is {} mod ? L.T("SelectedDetails", mod.Name, mod.Destination == "" ? L.T("RootGame") : mod.Destination) + string.Join("\n", mod.Files.Take(100)) : L.T("EmptyDetails");RefreshSkinInspector(); }
     private void RefreshShade()
     {
         if (shadePanel == null || library == null) return; shadePanel.IsEnabled=!CurrentProfiles().HasPending; shadePanel.Children.Clear(); shadePanel.Children.Add(Text(L.T("ReShadeTitle"), 21)); var exists = Directory.Exists(GamePath);

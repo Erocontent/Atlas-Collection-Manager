@@ -73,7 +73,9 @@ public partial class PremiumWindow
         var actions = new C.WrapPanel(); actions.Children.Add(Button(L.T("CollectionGameLibrary"), () => OpenGame(profile))); actions.Children.Add(Button(L.T("ImportCollection"), ImportCollection,"ImportCollectionButton",true)); header.Children.Add(actions);
         actions.Margin=new W.Thickness(0,0,0,12); page.Children.Add(header);
         var body = new C.Grid(); body.ColumnDefinitions.Add(new() { Width = new W.GridLength(300) }); body.ColumnDefinitions.Add(new()); C.Grid.SetRow(body, 1); page.Children.Add(body);
-        var list = new C.ListBox { Name = "CollectionList", Margin = new W.Thickness(0, 0, 24, 0) }; body.Children.Add(list);
+        var list = new C.ListBox { Name = "CollectionList", Background = SkinBrush("Base"), Template = (C.ControlTemplate)FindResource("CollectionListTemplate"), Margin = new W.Thickness(0, 0, 24, 0) }; list.Resources[W.SystemColors.ControlBrushKey] = SkinBrush("Base");
+        list.Resources[W.SystemColors.WindowBrushKey] = SkinBrush("Base");
+        body.Children.Add(list);
         var panel = new C.StackPanel { Margin = new W.Thickness(0, 0, 12, 0) }; var scroll = new C.ScrollViewer { Content = panel, VerticalScrollBarVisibility = C.ScrollBarVisibility.Auto }; C.Grid.SetColumn(scroll, 1); body.Children.Add(scroll);
         var installedPackages = library!.List();
         var activeIds = library.GetActive().Where(item => string.Equals(item.Game, GamePath, StringComparison.OrdinalIgnoreCase)).Select(item => item.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -86,6 +88,7 @@ public partial class PremiumWindow
         foreach (var item in imported)
         {
             var enabled = IsActive(item);
+            var anyActive = item.Entries.Any(entry => entry.PackageId != null && activeIds.Contains(entry.PackageId));
             var tile = new C.StackPanel();
             tile.Children.Add(SecondaryListItem(item.Manifest.Name,
                 item.Manifest.Version + " · " + L.T("ProfileCount", item.Manifest.Mods.Length), "\uE8F1"));
@@ -98,9 +101,16 @@ public partial class PremiumWindow
                 ((C.TextBlock)badge.Child).VerticalAlignment = W.VerticalAlignment.Center;
                 tileActions.Children.Add(badge);
             }
+            else if (anyActive) tileActions.Children.Add(CollectionBadge(SecondaryText(L.T("CollectionPartiallyActive"), 11), true));
+            if (anyActive && !enabled)
+            {
+                var deactivate = Button(L.T("CollectionDeactivate"), () => ReviewCollectionEnable(item.Manifest.Id, true));
+                deactivate.IsEnabled = !CurrentProfiles().HasPending;
+                tileActions.Children.Add(deactivate);
+            }
             var toggle = Button(L.T(enabled ? "CollectionDeactivate" : "CollectionActivate"),
                 () => ReviewCollectionEnable(item.Manifest.Id, enabled), "ToggleCollectionButton", !enabled);
-            toggle.IsEnabled = !CurrentProfiles().HasPending && CollectionDownloads.Plan(item, installedPackages) is { Length: > 0 } plan && plan.All(mod => mod.Ready);
+            toggle.IsEnabled = !CurrentProfiles().HasPending && (enabled || CollectionDownloads.Plan(item, installedPackages) is { Length: > 0 } plan && plan.All(mod => mod.Ready));
             toggle.Margin = new W.Thickness(0);
             toggle.Padding = new W.Thickness(10, 0, 10, 0);
             toggle.Height = 28;
@@ -149,6 +159,7 @@ public partial class PremiumWindow
                 var heading = SecondaryText(mod.Name, 19, false, true);
                 heading.Margin = new W.Thickness(0, 0, 0, 5);
                 card.Children.Add(heading);
+                if (mod.Nexus is {} fileSource) card.Children.Add(SecondaryText(mod.FileName ?? $"Nexus File ID {fileSource.FileId}", 12, true));
                 var badges = new C.WrapPanel { Margin = new W.Thickness(0, 0, 0, 5) };
                 badges.Children.Add(CollectionBadge(SecondaryText("v" + mod.Version, 11)));
                 card.Children.Add(badges);
@@ -201,12 +212,12 @@ public partial class PremiumWindow
                 var current=collections.Find(id);if(current==null)return;
                 var plan=CollectionDownloads.Plan(current,packages.Values);
                 summary.Text=L.T("CollectionInstallSummary",current.Entries.Count(e=>e.Selected),plan.Length-current.Entries.Count(e=>e.Selected),plan.Count(x=>!x.Ready));
-                var failures=ReadTransferFailures(profile,id);
-                retry.IsEnabled=plan.Any(item=>!item.Ready&&failures.Contains(TransferKey(item.Mod)));
+                var failures=collections.ReadFailureDetails(id);
+                retry.IsEnabled=plan.Any(item=>!item.Ready&&failures.ContainsKey(TransferKey(item.Mod)));
                 foreach(var item in plan)
                 {
                     var cached=item.Mod.Nexus is {} source&&nexusJobs.Any(job=>job.Link.GameDomain==NexusGames.Domain(profile.Id)&&job.Link.ModId==source.ModId&&job.Link.FileId==source.FileId&&job.Download!=null&&File.Exists(job.Download.Path));
-                    progress[item.Mod.Id].Text=item.Ready ? "" : L.T(failures.Contains(TransferKey(item.Mod))?"NexusFailed":cached?"NexusComplete":item.Mod.Nexus==null||nexusUser?.IsPremium!=true?"CollectionManualNeeded":"CollectionTransferWaiting");
+                    progress[item.Mod.Id].Text=item.Ready ? "" : failures.GetValueOrDefault(TransferKey(item.Mod)) is { Length: > 0 } detail ? detail : L.T(failures.ContainsKey(TransferKey(item.Mod))?"NexusFailed":cached?"NexusComplete":item.Mod.Nexus==null||nexusUser?.IsPremium!=true?"CollectionManualNeeded":"CollectionTransferWaiting");
                 }
                 activate.IsEnabled=plan.Length>0&&plan.All(x=>x.Ready)&&!CurrentProfiles().HasPending;
             }
@@ -271,13 +282,35 @@ public partial class PremiumWindow
             var collections = CurrentCollections();
             var lib = library!;
             var folder = GamePath;
-            var plan = profiles.PreviewCollection(id, folder, lib, collections, deactivate);
+            ShowCollectionApplyProgress(L.T("CollectionChecking"), null);
+            busy = true;
+            ProfilePlan plan;
+            try
+            {
+                plan = await Task.Run(() => profiles.PreviewCollection(id, folder, lib, collections, deactivate));
+            }
+            finally { busy = false; }
+            ShowCollectionApplyProgress(null, null);
             if (!PreviewProfile(plan, lib, collection: true, deactivate: deactivate)) return;
             busy = true;
             PageHost.IsEnabled = Navigation.IsEnabled = BottomNavigation.IsEnabled = false;
-            await Task.Run(() => profiles.ApplyCollection(id, plan, folder, lib, collections, deactivate));
+            var names = lib.List().ToDictionary(mod => mod.Id, mod => mod.Name);
+            var updating = true;
+            var progress = new Progress<CollectionApplyProgress>(step =>
+            {
+                if (updating) ShowCollectionApplyProgress(L.T("CollectionApplyingCount", step.Completed, step.Total),
+                    step.Total == 0 ? null : 100d * step.Completed / step.Total, names.GetValueOrDefault(step.PackageId, step.PackageId));
+            });
+            ShowCollectionApplyProgress(L.T("CollectionChecking"), null);
+            try
+            {
+                await Task.Run(() => profiles.ApplyCollection(id, plan, folder, lib, collections, deactivate, progress));
+                ShowCollectionApplyProgress(L.T("CollectionApplied"), 100);
+            }
+            finally { updating = false; }
         }
-        catch (Exception error) { Error(error); }
+        catch (ProfileFileConflict conflict) when (!deactivate && !busy) { ShowCollectionApplyProgress(null, null); ReviewCollectionConflict(id, conflict); }
+        catch (Exception error) { ShowCollectionApplyProgress(L.T("OperationFailed"), null); Error(error); }
         finally
         {
             busy = false;
@@ -285,6 +318,41 @@ public partial class PremiumWindow
             ShowCollections(id);
         }
     }
+    private void ReviewCollectionConflict(string id, ProfileFileConflict conflict)
+    {
+        var store = CurrentCollections();
+        var collection = store.Find(id);
+        if (collection == null) return;
+        var packages = library!.List();
+        IndexCoverSources(store.List());
+        var dialog = ProfileDialog(L.T("ModConflictFiles"), 650, 390);
+        var panel = new C.StackPanel { Margin = new W.Thickness(24) };
+        panel.Children.Add(Text(conflict.Message, 15));
+        foreach (var mod in new[] { conflict.First, conflict.Second })
+            if (NexusPackageLabel(mod.Id) is {} file) panel.Children.Add(Text(mod.Name + " · " + file, 13, true));
+        panel.Children.Add(Text(L.T("CollectionConflictChoice"), 13, true));
+        var actions = new C.WrapPanel();
+        actions.Children.Add(Button(L.T("Cancel"), () => dialog.Close()));
+        foreach (var (winner, loser) in new[] { (conflict.First, conflict.Second), (conflict.Second, conflict.First) })
+        {
+            var losingEntries = collection.Entries.Where(entry => entry.PackageId == loser.Id && entry.Selected).ToArray();
+            if (losingEntries.Length != 1 || !collection.Entries.Any(entry => entry.PackageId == winner.Id)) continue;
+            var entry = losingEntries[0];
+            var reviewed = collection with { Entries = collection.Entries.Select(item =>
+                item.ModId == entry.ModId ? item with { Selected = false } : item).ToArray() };
+            var desired = CollectionDownloads.Plan(reviewed, packages);
+            if (!desired.Any(item => item.PackageId == winner.Id) || desired.Any(item => item.PackageId == loser.Id)) continue;
+            actions.Children.Add(Button(L.T("ModPrefer", NexusPackageLabel(winner.Id) ?? winner.Name), () =>
+            {
+                store.SaveSelection(id, entry.ModId, false);
+                dialog.Close();
+            }));
+        }
+        panel.Children.Add(actions);
+        dialog.Content = new C.ScrollViewer { Content = panel, VerticalScrollBarVisibility = C.ScrollBarVisibility.Auto };
+        dialog.ShowDialog();
+    }
+
     private async void DeleteCollection(string id)
     {
         if(busy||game==null)return;

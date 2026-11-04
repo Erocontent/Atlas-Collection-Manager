@@ -33,7 +33,7 @@ public partial class PremiumWindow
     private void ShowModGallery(ModPackage package,string? initial=null)
     {
         if(busy||game==null||library==null)return;
-        var profile=game;var mod=library.List().Single(m=>m.Id==package.Id);var metadata=CurrentModDetails();var info=metadata.Get(mod);
+        var profile=game;var mod=library.List().Single(m=>m.Id==package.Id);var metadata=CurrentModDetails();var info=WithNexusVersion(metadata.Get(mod));
         var paths=info.Images.Where(p=>metadata.ImagePath(p)!=null).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if(paths.Length==0){ShowModPage(mod);return;}
         var index=Array.FindIndex(paths,p=>p==(initial??info.Cover));if(index<0)index=0;
@@ -63,12 +63,20 @@ public partial class PremiumWindow
     }
     private void AppendConflictFiles(C.Panel panel,ModConflictReport report,int maximum=200)
     {
-        foreach(var entry in report.Files.Take(maximum))
+        foreach (var group in report.Files.Take(maximum).GroupBy(entry => entry.OwnerId))
         {
-            var copy=new C.StackPanel();var owner=SecondaryText(entry.OwnerName,14,false,true);owner.Foreground=SkinBrush("Accent");copy.Children.Add(owner);
-            var path=SecondaryText(entry.CandidatePath,12);path.Margin=new W.Thickness(0,0,0,4);copy.Children.Add(path);
-            if(!entry.CandidatePath.Equals(entry.ExistingPath,StringComparison.Ordinal))copy.Children.Add(SecondaryText("↔ "+entry.ExistingPath,11,true));
-            panel.Children.Add(SecondarySurface(copy,new W.Thickness(14)));
+            var copy = new C.StackPanel();
+            copy.Children.Add(SecondaryText(group.First().OwnerName, 16, false, true));
+            if (NexusPackageLabel(group.Key) is {} file) copy.Children.Add(SecondaryText(file, 13, true));
+            foreach (var entry in group)
+            {
+                var path = SecondaryText(entry.CandidatePath, 12);
+                path.Margin = new W.Thickness(0, 4, 0, 4);
+                copy.Children.Add(path);
+                if (!entry.CandidatePath.Equals(entry.ExistingPath, StringComparison.OrdinalIgnoreCase))
+                    copy.Children.Add(SecondaryText(entry.ExistingPath, 11, true));
+            }
+            panel.Children.Add(SecondarySurface(copy, new W.Thickness(14)));
         }
         if(report.Truncated||report.Files.Length>maximum)panel.Children.Add(SecondaryText(L.T("ModConflictLimit",maximum),12,true));
     }
@@ -77,18 +85,37 @@ public partial class PremiumWindow
         if(busy||game==null||library==null)return;
         try
         {
+            IndexCoverSources(CurrentCollections().List());
             var mod=package;var lib=library;var folder=GamePath;var packages=lib.List();var active=lib.GetActive();
             busy=true;PageHost.IsEnabled=Navigation.IsEnabled=BottomNavigation.IsEnabled=false;
+            var conflictFolder = string.IsNullOrWhiteSpace(folder) ? Path.GetTempPath() : folder;
             ModConflictReport report;
-            try{report=await Task.Run(()=>ModConflictDetails.Explain(mod,packages,batch==null?active:BatchActiveRecords(batch,packages,active,folder),folder));}
+            try{report=await Task.Run(()=>ModConflictDetails.Explain(mod,packages,batch==null?LibraryConflictRecords(packages,conflictFolder):BatchActiveRecords(batch,packages,active,folder),conflictFolder));}
             finally{busy=false;PageHost.IsEnabled=Navigation.IsEnabled=BottomNavigation.IsEnabled=true;}
             if(owner!=null&&!owner.IsVisible)return;
             var dialog=ProfileDialog(L.T("ModConflictFiles"),760,680);if(owner!=null)dialog.Owner=owner;dialog.Name="ModConflictsDialog";
             var dock=new C.DockPanel{Margin=new W.Thickness(24)};
             var close=Button(L.T("ModClose"),()=>dialog.Close(),"ModConflictsCloseButton");close.HorizontalAlignment=W.HorizontalAlignment.Right;C.DockPanel.SetDock(close,C.Dock.Bottom);dock.Children.Add(close);
-            var content=new C.StackPanel();content.Children.Add(SecondaryText(mod.Name,25,false,true));content.Children.Add(SecondaryText(L.T(batch==null?"ModConflictHint":"ModConflictBatchHint"),13,true));
+            var content=new C.StackPanel();content.Children.Add(SecondaryText(mod.Name,25,false,true));if(NexusPackageLabel(mod.Id) is {} selectedFile) content.Children.Add(SecondaryText(selectedFile,14,true));content.Children.Add(SecondaryText(L.T(batch==null?"ModConflictHint":"ModConflictBatchHint"),13,true));
             if(report.Files.Length==0)content.Children.Add(SecondaryEmpty(L.T("ModConflictFiles"),L.T(string.IsNullOrWhiteSpace(folder)?"ModConflictFolderHint":"ModConflictNone"),"\uE73E"));
-            else AppendConflictFiles(content,report);
+            else
+            {
+                AppendConflictFiles(content, report);
+                if (batch == null && !report.Truncated && !string.IsNullOrWhiteSpace(folder))
+                {
+                    var options = new C.WrapPanel();
+                    foreach (var candidate in report.Files.Select(file => file.OwnerId).Append(mod.Id).Distinct())
+                    {
+                        var choice = packages.SingleOrDefault(item => item.Id == candidate);
+                        if (choice != null) options.Children.Add(Button(L.T("ModPrefer", NexusPackageLabel(choice.Id) ?? choice.Name), () =>
+                        {
+                            dialog.Close();
+                            Guard(() => PreferConflictingMod(choice.Id));
+                        }));
+                    }
+                    content.Children.Add(options);
+                }
+            }
             dock.Children.Add(new C.ScrollViewer{Content=content,VerticalScrollBarVisibility=C.ScrollBarVisibility.Auto});var root=new C.Grid();root.Children.Add(dock);dialog.Content=root;dialog.ShowDialog();
         }
         catch(Exception error){Error(error);}

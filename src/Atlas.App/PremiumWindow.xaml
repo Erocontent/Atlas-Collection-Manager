@@ -59,7 +59,99 @@
                 </Grid>
             </ControlTemplate></Setter.Value></Setter>
         </Style>
+        <Style x:Key="LauncherLanguageSelector" TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
+            <Setter Property="Height" Value="42"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton Foreground="{TemplateBinding Foreground}" Focusable="False"
+                                IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border x:Name="LanguageFrame" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Stroke}"
+                                                BorderThickness="1" CornerRadius="8" Padding="12,0">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="24"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="12"/>
+                                                </Grid.ColumnDefinitions>
+                                                <Path Data="M 7,0 A 7,7 0 1 1 7,14 A 7,7 0 1 1 7,0 M 0,7 H 14 M 7,0 C 3,3 3,11 7,14 M 7,0 C 11,3 11,11 7,14"
+                                                      Width="14" Height="14" Stretch="Uniform" Stroke="{DynamicResource Muted}" StrokeThickness="1"
+                                                      HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                                                <ContentPresenter Grid.Column="1" VerticalAlignment="Center"
+                                                    Content="{Binding SelectionBoxItem, RelativeSource={RelativeSource AncestorType=ComboBox}}"/>
+                                                <Path Grid.Column="2" Data="M 0,0 L 4,4 L 8,0" Stroke="{DynamicResource Muted}" StrokeThickness="1.4"
+                                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            </Grid>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="LanguageFrame" Property="BorderBrush" Value="{DynamicResource Accent}"/>
+                                            </Trigger>
+                                            <Trigger Property="IsChecked" Value="True">
+                                                <Setter TargetName="LanguageFrame" Property="BorderBrush" Value="{DynamicResource Accent}"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Top" AllowsTransparency="True" Focusable="False">
+                                <Border Background="{DynamicResource Elevated}" BorderBrush="{DynamicResource Stroke}" BorderThickness="1"
+                                        CornerRadius="8" Padding="5" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
+                                    <ScrollViewer MaxHeight="340"><ItemsPresenter/></ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style TargetType="ComboBoxItem"><Setter Property="Padding" Value="10,8"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="Background" Value="{DynamicResource Elevated}"/></Style>
+        <ControlTemplate x:Key="CompactSplitterTemplate" TargetType="GridSplitter">
+            <Grid Background="Transparent">
+                <Border x:Name="Handle" Width="1" Height="14" Background="{DynamicResource Stroke}"
+                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter TargetName="Handle" Property="Background" Value="{DynamicResource Accent}"/>
+                    <Setter TargetName="Handle" Property="Height" Value="22"/>
+                </Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate>
+        <Style x:Key="CompactModItem" TargetType="ListBoxItem">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Padding" Value="10,2"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="Row" Background="{DynamicResource Surface}"
+                                BorderBrush="{DynamicResource Stroke}" BorderThickness="0,0,0,1"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Row" Property="Background" Value="{DynamicResource Elevated}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Row" Property="Background" Value="{DynamicResource Elevated}"/>
+                                <Setter TargetName="Row" Property="BorderBrush" Value="{DynamicResource Accent}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <ControlTemplate x:Key="CollectionListTemplate" TargetType="ListBox">
+            <Border Background="{TemplateBinding Background}">
+                <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="{TemplateBinding ScrollViewer.VerticalScrollBarVisibility}" Focusable="False" CanContentScroll="{TemplateBinding ScrollViewer.CanContentScroll}">
+                    <ItemsPresenter/>
+                </ScrollViewer>
+            </Border>
+        </ControlTemplate>
         <Style TargetType="ListBox">
             <Setter Property="Background" Value="Transparent"/><Setter Property="BorderThickness" Value="0"/><Setter Property="Foreground" Value="{DynamicResource Text}"/>
             <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>

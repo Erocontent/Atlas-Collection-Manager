@@ -3,6 +3,15 @@ using System.Text.Json;
 namespace Atlas.Core;
 
 public sealed record ModProfile(string Id, string Name, string[] ModIds, string? Preset = null);
+public sealed class ProfileFileConflict(ModPackage first, ModPackage second, string firstPath, string secondPath)
+    : InvalidOperationException($"File conflict between {first.Name} and {second.Name}.\n{firstPath}\n{secondPath}")
+{
+    public ModPackage First { get; } = first;
+    public ModPackage Second { get; } = second;
+}
+
+public sealed record CollectionApplyProgress(int Completed, int Total, string PackageId);
+
 public sealed record ProfilePlan(ModProfile Profile, string[] Enable, string[] Disable, string[] Keep, string? Preset);
 
 public sealed class ModProfileStore
@@ -57,11 +66,10 @@ public sealed class ModProfileStore
         if(!active.Select(a=>a.Id).ToHashSet().SetEquals(current.ModIds)||!Same(Default(game)??"",current.Preset??""))return true;
         return false;
     }
-    private string Content(string id,string file){Id(id);return SafePaths.Resolve(SafePaths.Resolve(root,"packages/"+id+"/content"),file);}
     private static string Target(ModPackage mod,string file)=>SafePaths.Relative(mod.Destination.Length==0?file:mod.Destination+"/"+file);
     public string[] AvailablePresets(string[] modIds,ModLibrary library)
     {
-        foreach(var id in modIds)Id(id);return library.List().Where(m=>modIds.Contains(m.Id)).SelectMany(m=>m.Files.Where(f=>ReShadePackage.IsPresetFile(Content(m.Id,f))).Select(f=>Target(m,f))).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
+        foreach(var id in modIds)Id(id);return library.List().Where(m=>modIds.Contains(m.Id)).SelectMany(m=>m.Files.Where(f=>ReShadePackage.IsPresetFile(library.PackageContentResolver(m)(f))).Select(f=>Target(m,f))).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
     }
     public ModProfile Capture(string name,string gameFolder,ModLibrary library)
     {
@@ -88,24 +96,35 @@ public sealed class ModProfileStore
     {
         var collection = collections.Find(id) ?? throw new InvalidOperationException("Collection not found.");
         var requested = CollectionDownloads.Plan(collection, library.List());
-        if (requested.Length == 0 || requested.Any(item => !item.Ready))
+        if (!deactivate && (requested.Length == 0 || requested.Any(item => !item.Ready)))
             throw new InvalidOperationException("The collection must be ready before activation.");
         var game = ModLibrary.ValidateGame(gameFolder, profile);
         var collectionPackages = collections.List().SelectMany(item => item.Entries).Select(entry => entry.PackageId).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var standalone = library.GetActive().Where(item => Same(item.Game, game) && !collectionPackages.Contains(item.Id)).Select(item => item.Id);
         var selected = requested.Select(item => item.PackageId!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (deactivate)
+        {
+            selected = collection.Entries.Select(entry => entry.PackageId).OfType<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var activeIds = library.GetActive().Where(item => Same(item.Game, game)).Select(item => item.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var other in collections.List().Where(item => !Same(item.Manifest.Id, id)))
+            {
+                var otherPlan = CollectionDownloads.Plan(other, library.List());
+                if (otherPlan.Length > 0 && otherPlan.All(item => item.Ready && activeIds.Contains(item.PackageId!)))
+                    selected.ExceptWith(otherPlan.Select(item => item.PackageId!));
+            }
+        }
         var desired = deactivate
             ? library.GetActive().Where(item => Same(item.Game, game) && !selected.Contains(item.Id)).Select(item => item.Id).ToArray()
             : selected.Concat(standalone).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         return PreviewSelection(new ModProfile(Guid.NewGuid().ToString("N"), collection.Manifest.Name, desired), game, library, collections);
     }
 
-    public void ApplyCollection(string id, ProfilePlan plan, string gameFolder, ModLibrary library, CollectionStore collections, bool deactivate = false)
+    public void ApplyCollection(string id, ProfilePlan plan, string gameFolder, ModLibrary library, CollectionStore collections, bool deactivate = false, IProgress<CollectionApplyProgress>? progress = null)
     {
         var fresh = PreviewCollection(id, gameFolder, library, collections, deactivate);
         if (!fresh.Profile.ModIds.ToHashSet().SetEquals(plan.Profile.ModIds))
             throw new InvalidOperationException("The collection changed. Review it again before activating.");
-        ApplySelection(plan, gameFolder, library, collections, false);
+        ApplyValidatedSelection(plan, fresh, gameFolder, library, collections, false, progress);
     }
 
     internal ProfilePlan PreviewSelection(ModProfile p,string gameFolder,ModLibrary library,CollectionStore collections)
@@ -117,7 +136,8 @@ public sealed class ModProfileStore
         foreach(var a in active)
         {
             if(!packages.TryGetValue(a.Id,out var activePackage))throw new InvalidOperationException("Active package metadata is missing: "+a.Id);
-            foreach(var file in activePackage.Files)if(!File.Exists(Content(a.Id,file)))throw new InvalidOperationException("Active package content required for rollback is missing: "+file);
+            var content = library.PackageContentResolver(activePackage);
+            foreach(var file in activePackage.Files)if(!File.Exists(content(file)))throw new InvalidOperationException("Active package content required for rollback is missing: "+file);
         }
         foreach(var a in active)foreach(var f in a.Files)
         {
@@ -125,13 +145,18 @@ public sealed class ModProfileStore
             if(Hash(target)!=f.Hash&&(!packages.TryGetValue(a.Id,out var pkg)||pkg.Kind!="reshade"||pkg.Destination.Length!=0||!ReShadePackage.IsPresetFile(target)))throw new InvalidOperationException("Managed file was changed externally: "+f.Path);
             if(f.HadOriginal&&!File.Exists(SafePaths.Resolve(root,"packages/"+a.Id+"/originals/"+f.Path)))throw new InvalidOperationException("Original backup is missing: "+f.Path);
         }
-        var paths=new List<string>();var removed=active.Where(a=>!p.ModIds.Contains(a.Id)).SelectMany(a=>a.Files).ToDictionary(f=>f.Path,StringComparer.OrdinalIgnoreCase);
-        foreach(var mod in p.ModIds.Select(id=>packages[id]))foreach(var file in mod.Files)
+        var paths=new Dictionary<string, ModPackage>(StringComparer.OrdinalIgnoreCase);var removed=active.Where(a=>!p.ModIds.Contains(a.Id)).SelectMany(a=>a.Files).ToDictionary(f=>f.Path,StringComparer.OrdinalIgnoreCase);
+        foreach(var mod in p.ModIds.Select(id=>packages[id]))
         {
-            var source=Content(mod.Id,file);if(!File.Exists(source))throw new InvalidOperationException("Package content is missing: "+file);
+        var content = library.PackageContentResolver(mod);
+        foreach(var file in mod.Files)
+        {
+            var source=content(file);if(!File.Exists(source))throw new InvalidOperationException("Package content is missing: "+file);
             var relative=Target(mod,file);var target=SafePaths.Resolve(game,relative);
             if(profile.Executables.Any(e=>Same(e,relative))||Same(relative,"ReShade.ini"))throw new InvalidOperationException("Protected game file: "+relative);
-            if(paths.Any(other=>Same(other,relative)||other.StartsWith(relative+"/",StringComparison.OrdinalIgnoreCase)||relative.StartsWith(other+"/",StringComparison.OrdinalIgnoreCase)))throw new InvalidOperationException("Profile file conflict: "+relative);paths.Add(relative);
+            var overlap = paths.FirstOrDefault(other => Same(other.Key, relative) || other.Key.StartsWith(relative + "/", StringComparison.OrdinalIgnoreCase) || relative.StartsWith(other.Key + "/", StringComparison.OrdinalIgnoreCase));
+            if (overlap.Value != null) throw new ProfileFileConflict(overlap.Value, mod, overlap.Key, relative);
+            paths.Add(relative, mod);
             if(Directory.Exists(target))throw new InvalidOperationException("Directory blocks target: "+relative);
             for(var parent=Path.GetDirectoryName(target);parent!=null&&!Same(parent,game);parent=Path.GetDirectoryName(parent))if(File.Exists(parent))
             {
@@ -144,6 +169,7 @@ public sealed class ModProfileStore
             }
         }
         if(p.Preset!=null&&!AvailablePresets(p.ModIds,library).Contains(p.Preset,StringComparer.OrdinalIgnoreCase))throw new InvalidOperationException("Profile preset is missing or invalid.");
+        }
         var order=Order(p.ModIds,collections,true);var oldOrder=Order(active.Select(a=>a.Id),collections,false);var activeIds=active.Select(a=>a.Id).ToHashSet();
         return new(p,order.Where(id=>!activeIds.Contains(id)).ToArray(),oldOrder.Reverse().Where(id=>!p.ModIds.Contains(id)).ToArray(),order.Where(activeIds.Contains).ToArray(),p.Preset);
     }
@@ -187,38 +213,85 @@ public sealed class ModProfileStore
         var expected=new Dictionary<string,string?>(StringComparer.OrdinalIgnoreCase);
         if(id!=null)
         {
-            if(enable){var mod=library.List().Single(m=>m.Id==id);foreach(var file in mod.Files)expected[Target(mod,file)]=Hash(Content(id,file));}
+            if(enable){var mod=library.List().Single(m=>m.Id==id);var content = library.PackageContentResolver(mod);foreach(var file in mod.Files)expected[Target(mod,file)]=Hash(content(file));}
             else {var active=library.GetActive().Single(a=>a.Id==id);foreach(var f in active.Files)expected[f.Path]=f.HadOriginal?Hash(SafePaths.Resolve(root,"packages/"+id+"/originals/"+f.Path)):null;expected["ReShade.ini"]=PredictedIni(journal.Game,null,active);}
         }
         else expected["ReShade.ini"]=PredictedIni(journal.Game,preset);
         return journal with{Guards=journal.Guards.Select(g=>expected.TryGetValue(g.Path,out var hash)?g with{NextHash=hash,AllowsNext=true}:g).ToArray()};
     }
     private Guard[] Snapshot(string game,IEnumerable<string> paths)=>paths.Distinct(StringComparer.OrdinalIgnoreCase).Select(p=>new Guard(p,File.Exists(SafePaths.Resolve(game,p))?Hash(SafePaths.Resolve(game,p)):null)).ToArray();
-    private void CheckGuards(SwitchJournal journal)
+    private void CheckGuards(SwitchJournal journal) => VerifyGuards(journal);
+
+    private SwitchJournal RefreshGuards(SwitchJournal journal)
     {
-        foreach(var guard in journal.Guards){var path=SafePaths.Resolve(journal.Game,guard.Path);if(Directory.Exists(path)||(File.Exists(path)?Hash(path):null)!=guard.Hash&&(!guard.AllowsNext||(File.Exists(path)?Hash(path):null)!=guard.NextHash))throw new InvalidOperationException("External change prevents profile recovery: "+guard.Path);}
+        var guards = new Guard[journal.Guards.Length];
+        VerifyGuards(journal, guards);
+        return journal with { Guards = guards };
     }
+
+    private void VerifyGuards(SwitchJournal journal, Guard[]? verified = null)
+    {
+        for (var i = 0; i < journal.Guards.Length; i++)
+        {
+            var guard = journal.Guards[i];
+            var path = SafePaths.Resolve(journal.Game, guard.Path);
+            if (Directory.Exists(path))
+                throw new InvalidOperationException("External change prevents profile recovery: " + guard.Path);
+            var hash = File.Exists(path) ? Hash(path) : null;
+            if (hash != guard.Hash && (!guard.AllowsNext || hash != guard.NextHash))
+                throw new InvalidOperationException("External change prevents profile recovery: " + guard.Path);
+            if (verified != null)
+                verified[i] = new Guard(guard.Path, hash);
+        }
+    }
+
+    public ProfilePlan PreviewReplacement(string winner, string gameFolder, ModLibrary library, CollectionStore collections)
+    {
+        var game = ModLibrary.ValidateGame(gameFolder, profile);
+        var packages = library.List();
+        var candidate = packages.Single(package => package.Id == winner);
+        var active = library.GetActive();
+        var report = ModConflictDetails.Explain(candidate, packages, active, game, 1000);
+        if (report.Truncated) throw new InvalidOperationException("Too many conflicting files to review safely.");
+        var losers = report.Files.Select(file => file.OwnerId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var desired = active.Where(item => Same(item.Game, game) && !losers.Contains(item.Id)).Select(item => item.Id)
+            .Append(winner).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        return PreviewSelection(new ModProfile(Guid.NewGuid().ToString("N"), candidate.Name, desired), game, library, collections);
+    }
+
+    public void ApplyReplacement(ProfilePlan plan, string gameFolder, ModLibrary library, CollectionStore collections)
+        => ApplySelection(plan, gameFolder, library, collections, false);
+
     public void Apply(ProfilePlan plan,string gameFolder,ModLibrary library,CollectionStore collections)
     {
         ApplySelection(plan,gameFolder,library,collections,true);
     }
-    internal void ApplySelection(ProfilePlan plan,string gameFolder,ModLibrary library,CollectionStore collections,bool trackApplied)
+    internal void ApplySelection(ProfilePlan plan,string gameFolder,ModLibrary library,CollectionStore collections,bool trackApplied, IProgress<CollectionApplyProgress>? progress = null)
     {
-        var fresh=trackApplied?Preview(plan.Profile.Id,gameFolder,library,collections):PreviewSelection(plan.Profile,gameFolder,library,collections);if(!plan.Profile.ModIds.ToHashSet().SetEquals(fresh.Profile.ModIds)||!Same(plan.Profile.Preset??"",fresh.Profile.Preset??"")||plan.Profile.Name!=fresh.Profile.Name||!plan.Enable.ToHashSet().SetEquals(fresh.Enable)||!plan.Disable.ToHashSet().SetEquals(fresh.Disable)||!plan.Keep.ToHashSet().SetEquals(fresh.Keep))throw new InvalidOperationException("Profile or game state changed; review a new preview.");
+        var fresh=trackApplied?Preview(plan.Profile.Id,gameFolder,library,collections):PreviewSelection(plan.Profile,gameFolder,library,collections);
+        ApplyValidatedSelection(plan, fresh, gameFolder, library, collections, trackApplied, progress);
+    }
+
+    private void ApplyValidatedSelection(ProfilePlan plan, ProfilePlan fresh, string gameFolder, ModLibrary library, CollectionStore collections, bool trackApplied, IProgress<CollectionApplyProgress>? progress)
+    {
+        if(!plan.Profile.ModIds.ToHashSet().SetEquals(fresh.Profile.ModIds)||!Same(plan.Profile.Preset??"",fresh.Profile.Preset??"")||plan.Profile.Name!=fresh.Profile.Name||!plan.Enable.ToHashSet().SetEquals(fresh.Enable)||!plan.Disable.ToHashSet().SetEquals(fresh.Disable)||!plan.Keep.ToHashSet().SetEquals(fresh.Keep))throw new InvalidOperationException("Profile or game state changed; review a new preview.");
         var game=Folder(gameFolder);var ini=SafePaths.Resolve(game,"ReShade.ini");
         if(File.Exists(ini)&&new FileInfo(ini).Length>4*1024*1024)throw new InvalidOperationException("ReShade.ini exceeds 4 MiB.");
         var paths=library.GetActive().Where(a=>Same(a.Game,game)).SelectMany(a=>a.Files.Select(f=>f.Path)).Concat(library.List().Where(m=>fresh.Profile.ModIds.Contains(m.Id)).SelectMany(m=>m.Files.Select(f=>Target(m,f)))).Append("ReShade.ini").ToArray();
         var journal=new SwitchJournal(game,library.GetActive().Where(a=>Same(a.Game,game)).Select(a=>a.Id).ToArray(),fresh.Profile.ModIds,File.Exists(ini)?File.ReadAllBytes(ini):null,Snapshot(game,paths),AppliedProfiles().SingleOrDefault(a=>Same(a.Game,game)));Save(Pending,journal);
         try
         {
-            foreach(var id in fresh.Disable){CheckGuards(journal);journal=Intent(journal,library,id,false);Save(Pending,journal);library.Disable(id,game);CheckGuards(journal);journal=journal with{Guards=Snapshot(game,paths)};Save(Pending,journal);}
-            foreach(var id in fresh.Enable){CheckGuards(journal);collections.EnsureCanEnable(id,library,game);journal=Intent(journal,library,id,true);Save(Pending,journal);library.Enable(id,game);CheckGuards(journal);journal=journal with{Guards=Snapshot(game,paths)};Save(Pending,journal);}
+            var completed = 0;
+            var total = fresh.Disable.Length + fresh.Enable.Length;
+            void Report(string id) => progress?.Report(new(completed, total, id));
+            foreach(var id in fresh.Disable){Report(id);CheckGuards(journal);journal=Intent(journal,library,id,false);Save(Pending,journal);library.Disable(id,game);journal=RefreshGuards(journal);Save(Pending,journal);completed++;}
+            foreach(var id in fresh.Enable){Report(id);CheckGuards(journal);collections.EnsureCanEnable(id,library,game);journal=Intent(journal,library,id,true);Save(Pending,journal);library.Enable(id,game);journal=RefreshGuards(journal);Save(Pending,journal);completed++;}
             CheckGuards(journal);
             if(trackApplied)
             {
             journal=Intent(journal,library,null,false,fresh.Preset);Save(Pending,journal);
             if(fresh.Preset==null)ReShadePresets.ClearDefault(profile,game,SafePaths.Resolve(root,"reshade-backups"));else ReShadePresets.SetDefault(profile,game,fresh.Preset,SafePaths.Resolve(root,"reshade-backups"));
-            CheckGuards(journal);journal=journal with{Guards=Snapshot(game,paths)};Save(Pending,journal);
+            journal=RefreshGuards(journal);Save(Pending,journal);
             }
             if(trackApplied)Save(CurrentFile,AppliedProfiles().Where(a=>!Same(a.Game,game)).Append(new Applied(game,fresh.Profile)).ToArray());File.Delete(Pending);
         }
@@ -232,12 +305,11 @@ public sealed class ModProfileStore
         if(!HasPending)return;var game=ModLibrary.ValidateGame(gameFolder,profile);var journal=Read<SwitchJournal>(Pending);if(!Same(journal.Game,game))throw new InvalidOperationException("Recover using the original game folder.");
         // Finish any single-package recovery first; that journal independently checks external edits.
         CheckGuards(journal);library.Recover(game);
-        CheckGuards(journal);journal=journal with{Guards=Snapshot(game,journal.Guards.Select(g=>g.Path))};Save(Pending,journal);
-        var paths=journal.Guards.Select(g=>g.Path).ToArray();
+        journal=RefreshGuards(journal);Save(Pending,journal);
         foreach(var id in Order(library.GetActive().Where(a=>Same(a.Game,game)).Select(a=>a.Id),collections,false).Reverse().Where(id=>!journal.Before.Contains(id)))
-        {CheckGuards(journal);journal=Intent(journal,library,id,false);Save(Pending,journal);library.Disable(id,game);CheckGuards(journal);journal=journal with{Guards=Snapshot(game,paths)};Save(Pending,journal);}
+        {CheckGuards(journal);journal=Intent(journal,library,id,false);Save(Pending,journal);library.Disable(id,game);journal=RefreshGuards(journal);Save(Pending,journal);}
         foreach(var id in Order(journal.Before,collections,false).Where(id=>!library.GetActive().Any(a=>a.Id==id&&Same(a.Game,game))))
-        {CheckGuards(journal);journal=Intent(journal,library,id,true);Save(Pending,journal);library.Enable(id,game);CheckGuards(journal);journal=journal with{Guards=Snapshot(game,paths)};Save(Pending,journal);}
+        {CheckGuards(journal);journal=Intent(journal,library,id,true);Save(Pending,journal);library.Enable(id,game);journal=RefreshGuards(journal);Save(Pending,journal);}
         CheckGuards(journal);journal=journal with{Guards=journal.Guards.Select(g=>Same(g.Path,"ReShade.ini")?g with{AllowsNext=true,NextHash=journal.Ini==null?null:Convert.ToHexString(SHA256.HashData(journal.Ini))}:g).ToArray()};Save(Pending,journal);var ini=SafePaths.Resolve(game,"ReShade.ini");if(journal.Ini==null){if(File.Exists(ini))File.Delete(ini);}else AtomicFiles.Write(ini,s=>s.Write(journal.Ini));Save(CurrentFile,AppliedProfiles().Where(a=>!Same(a.Game,game)).Concat(journal.BeforeApplied==null?Array.Empty<Applied>():new[]{journal.BeforeApplied}).ToArray());File.Delete(Pending);
     }
 }

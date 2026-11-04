@@ -30,7 +30,9 @@ public partial class PremiumWindow
         public CancellationTokenSource? Cancellation;
         public C.TextBlock? Caption; public C.ProgressBar? Progress;
     }
-    private sealed record NexusHistory(string GameId,long ModId,long FileId,NexusFile File,string Archive);
+    private sealed record NexusHistory(string GameId,long ModId,long FileId,NexusFile File,string Archive, string? Folder = null);
+    private string NexusDownloadFolder => Path.IsPathFullyQualified(preferences.NexusDownloadFolder ?? "")
+        ? preferences.NexusDownloadFolder! : Path.Combine(data, "nexus-downloads");
     public void ReceiveNxm(string value)
     {
         try { QueueNexus(NexusLink.Parse(value)); if (!busy) { if(collectionTransfer is not {Cancelled:false})ShowNexus(); if(WindowState==W.WindowState.Minimized)WindowState=W.WindowState.Normal; Activate(); } }
@@ -47,17 +49,85 @@ public partial class PremiumWindow
     {
         if(busy)return; LoadNexusHistory(); profilesPageVisible=false; nexusPageVisible=true; modList=null; shadePanel=null; status=null; NavigationBuild();
         var page=SettingsPage(true);var content=new C.StackPanel{Margin=new W.Thickness(0,18,0,0)};page.Children.Add(new C.ScrollViewer{Content=content,VerticalScrollBarVisibility=C.ScrollBarVisibility.Auto});
-        var top=new C.StackPanel();top.Children.Add(SecondaryText(L.T("NexusTitle"),24,false,true));top.Children.Add(Text(L.T("NexusTesting"),12,true));
-        top.Children.Add(Text(nexusConnecting?L.T("NexusConnecting"):nexusUser==null?L.T("NexusDisconnected"):L.T("NexusConnected",nexusUser.Name,L.T(nexusUser.IsPremium?"NexusPremium":"NexusFree")),15));
-        var account=new C.WrapPanel();var key=Button(L.T("NexusConnect"),ConnectNexus,"NexusConnectButton");key.IsEnabled=!nexusConnecting;account.Children.Add(key);
-        var sso=Button(L.T("NexusSso"),()=>ConnectNexusSso(),"NexusSsoButton");sso.IsEnabled=!nexusConnecting&&NexusSlug.Length>0;sso.ToolTip=L.T("NexusSsoPending");account.Children.Add(sso);
-        var refresh=Button(L.T("NexusRefreshAccount"),()=>RefreshNexusAccount());refresh.IsEnabled=!nexusConnecting;account.Children.Add(refresh);
-        account.Children.Add(Button(L.T("NexusDisconnect"),DisconnectNexus));top.Children.Add(account);
-        if(NexusSlug.Length==0)top.Children.Add(Text(L.T("NexusSsoPending"),11,true));
-        var protocolActions=new C.WrapPanel();protocolActions.Children.Add(Button(L.T("NexusRegister"),()=>{if(!Confirm(L.T("NexusRegisterConfirm")))return;new NxmProtocol(data,Environment.ProcessPath!).Register();W.MessageBox.Show(this,L.T("NexusRegistered"),"Atlas");}));
-        protocolActions.Children.Add(Button(L.T("NexusRestore"),()=>{new NxmProtocol(data,Environment.ProcessPath!).Restore();W.MessageBox.Show(this,L.T("NexusRestored"),"Atlas");}));top.Children.Add(protocolActions);
-        var input=new C.TextBox{Name="NxmLinkInput",MaxLength=8192};System.Windows.Automation.AutomationProperties.SetName(input,L.T("NexusPaste"));top.Children.Add(SearchField(input,L.T("NexusPaste")));
-        top.Children.Add(Button(L.T("NexusAdd"),()=>{var value=input.Text.Trim();QueueNexus(NexusLink.Parse(value));input.Clear();},"NxmAddButton"));top.Children.Add(Text(L.T("NexusLinkHint"),12,true));content.Children.Add(SecondarySurface(top));
+        content.Children.Add(SecondaryText(L.T("NexusTitle"), 24, false, true));
+        C.StackPanel Section(string title)
+        {
+            var section = new C.StackPanel();
+            section.Children.Add(SecondaryText(title, 17, false, true));
+            content.Children.Add(SecondarySurface(section, new W.Thickness(18, 14, 18, 10)));
+            return section;
+        }
+
+        var accountSection = Section(L.T("NexusAccountSection"));
+        accountSection.Children.Add(Text(nexusConnecting ? L.T("NexusConnecting") : nexusUser == null ? L.T("NexusDisconnected") :
+            L.T("NexusConnected", nexusUser.Name, L.T(nexusUser.IsPremium ? "NexusPremium" : "NexusFree")), 14, true));
+        var account = new C.WrapPanel();
+        var key = Button(L.T("NexusConnect"), ConnectNexus, "NexusConnectButton", nexusUser == null);
+        key.IsEnabled = !nexusConnecting;
+        account.Children.Add(key);
+        if (NexusSlug.Length > 0)
+        {
+            var sso = Button(L.T("NexusSso"), () => ConnectNexusSso(), "NexusSsoButton");
+            sso.IsEnabled = !nexusConnecting;
+            account.Children.Add(sso);
+        }
+        var refresh = Button(L.T("NexusRefreshAccount"), () => RefreshNexusAccount());
+        refresh.IsEnabled = !nexusConnecting;
+        account.Children.Add(refresh);
+        if (nexusUser != null) account.Children.Add(Button(L.T("NexusDisconnect"), DisconnectNexus));
+        accountSection.Children.Add(account);
+
+        var links = Section(L.T("NexusLinksSection"));
+        var protocolActions = new C.WrapPanel();
+        protocolActions.Children.Add(Button(L.T("NexusRegister"), () =>
+        {
+            if (!Confirm(L.T("NexusRegisterConfirm"))) return;
+            new NxmProtocol(data, Environment.ProcessPath!).Register();
+            W.MessageBox.Show(this, L.T("NexusRegistered"), "Atlas");
+        }));
+        protocolActions.Children.Add(Button(L.T("NexusRestore"), () =>
+        {
+            new NxmProtocol(data, Environment.ProcessPath!).Restore();
+            W.MessageBox.Show(this, L.T("NexusRestored"), "Atlas");
+        }));
+        links.Children.Add(protocolActions);
+
+        var folderSection = Section(L.T("NexusFolderSection"));
+        var folderRow = new C.DockPanel();
+        var chooseFolder = Button(L.T("NexusChooseDownloadFolder"), () =>
+        {
+            var picker = new Microsoft.Win32.OpenFolderDialog { InitialDirectory = NexusDownloadFolder };
+            if (picker.ShowDialog(this) != true) return;
+            preferences.NexusDownloadFolder = picker.FolderName;
+            store.Save(preferences);
+            ShowNexus();
+        }, "NexusDownloadFolderButton");
+        C.DockPanel.SetDock(chooseFolder, C.Dock.Right);
+        folderRow.Children.Add(chooseFolder);
+        var folderLink = Button("", () =>
+        {
+            var folder = Directory.CreateDirectory(NexusDownloadFolder).FullName;
+            Process.Start(new ProcessStartInfo(folder) { UseShellExecute = true });
+        }, "NexusOpenDownloadFolderButton");
+        var path = SecondaryText(NexusDownloadFolder, 12, true);
+        path.Margin = new W.Thickness(0);
+        path.TextWrapping = W.TextWrapping.NoWrap;
+        path.TextTrimming = W.TextTrimming.CharacterEllipsis;
+        folderLink.Content = path;
+        folderLink.ToolTip = NexusDownloadFolder;
+        folderRow.Children.Add(folderLink);
+        folderSection.Children.Add(folderRow);
+
+        var queue = Section(L.T("NexusAdd"));
+        var input = new C.TextBox { Name = "NxmLinkInput", MaxLength = 8192 };
+        System.Windows.Automation.AutomationProperties.SetName(input, L.T("NexusPaste"));
+        var queueRow = new C.DockPanel();
+        var add = Button(L.T("NexusAdd"), () => { QueueNexus(NexusLink.Parse(input.Text.Trim())); input.Clear(); }, "NxmAddButton", true);
+        C.DockPanel.SetDock(add, C.Dock.Right);
+        queueRow.Children.Add(add);
+        queueRow.Children.Add(SearchField(input, L.T("NexusPaste")));
+        queue.Children.Add(queueRow);
+        queue.Children.Add(Text(L.T("NexusLinkHint"), 12, true));
         nexusQueuePanel=new C.StackPanel();content.Children.Add(nexusQueuePanel);RefreshNexusQueue();
     }
     private void ConnectNexus()
@@ -109,7 +179,7 @@ public partial class PremiumWindow
                 try
                 {
                     var progress=new Progress<NexusProgress>(p=>{job.Bytes=p.Bytes;job.Total=p.TotalBytes;UpdateNexusProgress(job);});
-                    job.Download=await nexusClient.DownloadAsync(job.Link,Path.Combine(data,"nexus-downloads"),progress,job.Cancellation.Token);job.State="NexusComplete";
+                    job.Download=await nexusClient.DownloadAsync(job.Link,NexusDownloadFolder,progress,job.Cancellation.Token);job.State="NexusComplete";
                     // Signed NXM authorization is session-only and is discarded after a successful download.
                     job.Link=new(job.Link.GameDomain,job.Link.ModId,job.Link.FileId);SaveNexusHistory();
                     BindCollectionDownload(job);
@@ -124,6 +194,7 @@ public partial class PremiumWindow
     }
     private void UpdateNexusProgress(NexusJob job)
     {
+        RefreshSidebarDownloads();
         refreshCollectionTransfer?.Invoke();
         if(!nexusPageVisible||nexusClosed)return;
         if(job.Progress!=null){job.Progress.IsIndeterminate=job.Total==null;job.Progress.Value=job.Total>0?100d*job.Bytes/job.Total.Value:0;}
@@ -131,10 +202,12 @@ public partial class PremiumWindow
     }
     private void RefreshNexusQueue()
     {
+        RefreshSidebarDownloads();
         refreshCollectionTransfer?.Invoke();
         if(!nexusPageVisible||nexusQueuePanel==null||nexusClosed)return;nexusQueuePanel.Children.Clear();
-        if(nexusJobs.Count==0){nexusQueuePanel.Children.Add(SecondaryEmpty(L.T("NexusTitle"),L.T("NexusQueueEmpty"),"\uE896"));return;}
-        foreach(var job in nexusJobs.AsEnumerable().Reverse())
+        var visible = nexusJobs.Where(job => job.State is "NexusQueued" or "NexusDownloading" or "NexusFailed").Reverse().ToArray();
+        if (visible.Length == 0) return;
+        foreach(var job in visible)
         {
             var card=new C.StackPanel();card.Children.Add(SecondaryText(job.Download?.File.Name??$"{GameCatalog.Get(NexusGames.GameId(job.Link.GameDomain)).Name} · #{job.Link.ModId} / {job.Link.FileId}",18,false,true));
             job.Caption=Text(L.T(job.State),12,true);card.Children.Add(job.Caption);
@@ -183,12 +256,12 @@ public partial class PremiumWindow
     {
         if(nexusHistoryLoaded)return;nexusHistoryLoaded=true;var path=Path.Combine(data,"nexus-history.json");
         try{if(!File.Exists(path)||new FileInfo(path).Length>1024*1024)return;foreach(var entry in (JsonSerializer.Deserialize<NexusHistory[]>(File.ReadAllText(path))??[]).Take(200))
-        {if(entry?.File==null||entry.Archive==null||entry.File.FileId!=entry.FileId)continue;var domain=NexusGames.Domain(entry.GameId);if(!Guid.TryParseExact(Path.GetFileNameWithoutExtension(entry.Archive),"N",out _)||Path.GetFileName(entry.Archive)!=entry.Archive||!ModArchives.IsSupported(entry.Archive)||entry.ModId<=0||entry.FileId<=0)continue;var archive=Path.Combine(data,"nexus-downloads",entry.Archive);if(File.Exists(archive))nexusJobs.Add(new(new(domain,entry.ModId,entry.FileId)){Download=new(archive,entry.File,entry.GameId),State="NexusComplete"});}}
+        {if(entry?.File==null||entry.Archive==null||entry.File.FileId!=entry.FileId)continue;var domain=NexusGames.Domain(entry.GameId);if(!Guid.TryParseExact(Path.GetFileNameWithoutExtension(entry.Archive),"N",out _)||Path.GetFileName(entry.Archive)!=entry.Archive||!ModArchives.IsSupported(entry.Archive)||entry.ModId<=0||entry.FileId<=0)continue;var folder=Path.IsPathFullyQualified(entry.Folder ?? "") ? entry.Folder! : Path.Combine(data,"nexus-downloads");var archive=Path.Combine(folder,entry.Archive);if(File.Exists(archive))nexusJobs.Add(new(new(domain,entry.ModId,entry.FileId)){Download=new(archive,entry.File,entry.GameId),State="NexusComplete"});}}
         catch(Exception e)when(e is IOException or JsonException or InvalidOperationException or ArgumentException){/* Invalid local history must not prevent use of the library. */}
     }
     private void SaveNexusHistory()
     {
-        var records=nexusJobs.Where(j=>j.Download!=null).TakeLast(200).Select(j=>new NexusHistory(j.Download!.GameId,j.Link.ModId,j.Link.FileId,j.Download.File,Path.GetFileName(j.Download.Path))).ToArray();var path=Path.Combine(data,"nexus-history.json");
+        var records=nexusJobs.Where(j=>j.Download!=null).TakeLast(200).Select(j=>new NexusHistory(j.Download!.GameId,j.Link.ModId,j.Link.FileId,j.Download.File,Path.GetFileName(j.Download.Path),Path.GetDirectoryName(j.Download.Path))).ToArray();var path=Path.Combine(data,"nexus-history.json");
         var temp=path+".tmp";using(var stream=new FileStream(temp,FileMode.Create,FileAccess.Write,FileShare.None)){JsonSerializer.Serialize(stream,records);stream.Flush(true);}File.Move(temp,path,true);
     }
 }

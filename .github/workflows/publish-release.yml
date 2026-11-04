@@ -1,6 +1,9 @@
 name: Publish Atlas beta
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       version:
@@ -13,10 +16,10 @@ permissions:
 
 jobs:
   release:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref_type == 'tag'
     runs-on: windows-latest
     env:
-      VERSION: ${{ inputs.version }}
+      RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
       GH_TOKEN: ${{ github.token }}
 
     steps:
@@ -30,6 +33,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $env:VERSION = $env:RELEASE_VERSION -creplace '^v', ''
           if ($env:VERSION -notmatch '^\d+\.\d+\.\d+$') {
             throw 'Enter a version such as 0.19.22.'
           }
@@ -39,9 +43,11 @@ jobs:
             "-p:Version=$env:VERSION" -o publish
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          "VERSION=$env:VERSION" >> $env:GITHUB_ENV
           Copy-Item LICENSE publish/LICENSE.txt
+          Copy-Item docs/third-party/*.txt publish
           $zip = "Atlas-Collection-Manager-v$env:VERSION-win-x64.zip"
-          Compress-Archive -Path publish/AtlasCollectionManager.exe,publish/LICENSE.txt -DestinationPath $zip
+          Compress-Archive -Path publish/AtlasCollectionManager.exe,publish/*.txt -DestinationPath $zip
 
       - name: Publish GitHub prerelease
         shell: pwsh
@@ -50,5 +56,5 @@ jobs:
           $zip = "Atlas-Collection-Manager-$tag-win-x64.zip"
           gh release create $tag $zip --target $env:GITHUB_SHA --prerelease `
             --title "Atlas Collection Manager $tag Beta" `
-            --notes "Windows x64 beta. Extract the ZIP and run AtlasCollectionManager.exe. See the English player guide in the repository."
+            --notes-file CHANGELOG.md
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
