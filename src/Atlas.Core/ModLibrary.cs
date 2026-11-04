@@ -143,7 +143,12 @@ public sealed class ModLibrary
         var owner = Active().SingleOrDefault(mod => Same(mod.Game, game) && mod.Files.Any(file => Same(file.Path, "d3d9.dll")));
         if (owner == null) return null;
         var proxy = owner.Files.Single(file => Same(file.Path, "d3d9.dll"));
-        if (proxy.HadOriginal) return null;
+        if (proxy.HadOriginal)
+        {
+            var backup = Backup(owner.Id, proxy.Path);
+            if (!File.Exists(backup) || !ReShadePackage.IsRuntime(backup) ||
+                !ReShadePackage.RuntimeMatchesGame(backup, GameLauncher.Prepare(profile, game).FileName)) return null;
+        }
         var files = owner.Files.Select(file => file.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (!files.Contains("dinput8.dll") || !files.Contains("d3d9_ui_mod.txt") || !files.Contains("AutoLink/NAME.txt")) return null;
         return owner.Id;

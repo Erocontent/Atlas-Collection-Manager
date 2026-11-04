@@ -2,7 +2,7 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms><UseWPF>true</UseWPF><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
-    <AssemblyName>AtlasCollectionManager</AssemblyName><Version>0.19.0</Version>
+    <AssemblyName>AtlasCollectionManager</AssemblyName><Version>0.19.22</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../Atlas.Core/Atlas.Core.csproj"/></ItemGroup>

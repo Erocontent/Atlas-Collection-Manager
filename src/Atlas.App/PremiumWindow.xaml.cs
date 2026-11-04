@@ -202,12 +202,22 @@ public partial class PremiumWindow : W.Window
             busy = true;
             PageHost.IsEnabled = Navigation.IsEnabled = BottomNavigation.IsEnabled = false;
             if (status != null) status.Text = L.T("Processing");
+            if (autoLink != null)
+            {
+                await Task.Run(() => lib.PrepareAutoLinkForReShade(autoLink, folder));
+                if (ReShadePresets.HasRuntime(folder, profile))
+                {
+                    RefreshShade();
+                    if (status != null) status.Text = L.T("ReShadeRuntimeInstalled");
+                    return;
+                }
+            }
             var installer = await ReShadeSetup.DownloadAsync(Path.Combine(data, "cache"), new Progress<double>(p =>
             {
                 if (status != null) status.Text = L.T("Processing") + " " + (int)(p * 100) + "%";
             }));
             var setup = ReShadeSetup.Prepare(profile, folder, installer);
-            if (autoLink != null) await Task.Run(() => lib.PrepareAutoLinkForReShade(autoLink, folder));
+
             if (status != null) status.Text = L.T("OfficialSetupRunning");
             using var process = Process.Start(setup) ?? throw new InvalidOperationException(L.T("ReShadeSetupFailed", ""));
             await process.WaitForExitAsync();
